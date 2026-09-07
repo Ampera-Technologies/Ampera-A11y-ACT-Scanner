@@ -1,4 +1,4 @@
-import { db, userPermissionsTable, userGroupsTable, userGroupMembersTable, sitesTable, siteUserAccessTable, siteGroupAccessTable, crawlerSessionsTable } from "@workspace/db";
+import { db, pool, userGroupMembersTable, sitesTable, siteUserAccessTable, siteGroupAccessTable, crawlerSessionsTable } from "@workspace/db";
 import { eq, and, inArray, max } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
@@ -58,52 +58,88 @@ const FULL_ACCESS: EffectivePermissions = {
   allowedRules: null,
 };
 
-// Keep this projection explicit. Whole-table projections have caused
-// orderSelectedFields() failures in bundled production builds when table
-// metadata is traversed recursively.
-const USER_PERMISSION_COLUMNS = {
-  userId: userPermissionsTable.userId,
-  canScan: userPermissionsTable.canScan,
-  canExport: userPermissionsTable.canExport,
-  canViewAllScans: userPermissionsTable.canViewAllScans,
-  canEditScan: userPermissionsTable.canEditScan,
-  canDeleteScan: userPermissionsTable.canDeleteScan,
-  canManageScan: userPermissionsTable.canManageScan,
-  canCreateProject: userPermissionsTable.canCreateProject,
-  canDeleteProject: userPermissionsTable.canDeleteProject,
-  canDisableJs: userPermissionsTable.canDisableJs,
-  canSmartAnalysis: userPermissionsTable.canSmartAnalysis,
-  canSwitchSite: userPermissionsTable.canSwitchSite,
-  canCreateCrawl: userPermissionsTable.canCreateCrawl,
-  canDeleteCrawl: userPermissionsTable.canDeleteCrawl,
-  canViewCrawlHistory: userPermissionsTable.canViewCrawlHistory,
-  canViewQualityAssurance: userPermissionsTable.canViewQualityAssurance,
-  canViewSiteAccessibilityDashboard: userPermissionsTable.canViewSiteAccessibilityDashboard,
-  canViewHtmlReplay: userPermissionsTable.canViewHtmlReplay,
-  canManageSites: userPermissionsTable.canManageSites,
-  canManageSiteTargetScore: userPermissionsTable.canManageSiteTargetScore,
-  canViewIssues: userPermissionsTable.canViewIssues,
-  canCreateIssue: userPermissionsTable.canCreateIssue,
-  canEditIssue: userPermissionsTable.canEditIssue,
-  canCommentIssue: userPermissionsTable.canCommentIssue,
-  canManageIssues: userPermissionsTable.canManageIssues,
-  allowedRules: userPermissionsTable.allowedRules,
-  updatedAt: userPermissionsTable.updatedAt,
-  updatedBy: userPermissionsTable.updatedBy,
+type PermissionRow = Partial<EffectivePermissions> & {
+  userId?: number;
 };
+
+const PERMISSION_SELECT_SQL = `
+  SELECT
+    user_id AS "userId",
+    can_scan AS "canScan",
+    can_export AS "canExport",
+    can_view_all_scans AS "canViewAllScans",
+    can_edit_scan AS "canEditScan",
+    can_delete_scan AS "canDeleteScan",
+    can_manage_scan AS "canManageScan",
+    can_create_project AS "canCreateProject",
+    can_delete_project AS "canDeleteProject",
+    can_disable_js AS "canDisableJs",
+    can_smart_analysis AS "canSmartAnalysis",
+    can_switch_site AS "canSwitchSite",
+    can_create_crawl AS "canCreateCrawl",
+    can_delete_crawl AS "canDeleteCrawl",
+    can_view_crawl_history AS "canViewCrawlHistory",
+    can_view_quality_assurance AS "canViewQualityAssurance",
+    can_view_site_accessibility_dashboard AS "canViewSiteAccessibilityDashboard",
+    can_view_html_replay AS "canViewHtmlReplay",
+    can_manage_sites AS "canManageSites",
+    can_manage_site_target_score AS "canManageSiteTargetScore",
+    can_view_issues AS "canViewIssues",
+    can_create_issue AS "canCreateIssue",
+    can_edit_issue AS "canEditIssue",
+    can_comment_issue AS "canCommentIssue",
+    can_manage_issues AS "canManageIssues",
+    allowed_rules AS "allowedRules"
+  FROM user_permissions
+  WHERE user_id = $1
+  LIMIT 1`;
+
+const GROUP_PERMISSION_SELECT_SQL = `
+  SELECT
+    g.can_scan AS "canScan",
+    g.can_export AS "canExport",
+    g.can_view_all_scans AS "canViewAllScans",
+    g.can_edit_scan AS "canEditScan",
+    g.can_delete_scan AS "canDeleteScan",
+    g.can_manage_scan AS "canManageScan",
+    g.can_create_project AS "canCreateProject",
+    g.can_delete_project AS "canDeleteProject",
+    g.can_disable_js AS "canDisableJs",
+    g.can_smart_analysis AS "canSmartAnalysis",
+    g.can_switch_site AS "canSwitchSite",
+    g.can_create_crawl AS "canCreateCrawl",
+    g.can_delete_crawl AS "canDeleteCrawl",
+    g.can_view_crawl_history AS "canViewCrawlHistory",
+    g.can_view_quality_assurance AS "canViewQualityAssurance",
+    g.can_view_site_accessibility_dashboard AS "canViewSiteAccessibilityDashboard",
+    g.can_view_html_replay AS "canViewHtmlReplay",
+    g.can_manage_sites AS "canManageSites",
+    g.can_manage_site_target_score AS "canManageSiteTargetScore",
+    g.can_view_issues AS "canViewIssues",
+    g.can_create_issue AS "canCreateIssue",
+    g.can_edit_issue AS "canEditIssue",
+    g.can_comment_issue AS "canCommentIssue",
+    g.can_manage_issues AS "canManageIssues"
+  FROM user_group_members membership
+  INNER JOIN user_groups g ON g.id = membership.group_id
+  WHERE membership.user_id = $1`;
+
+async function getDirectPermissions(userId: number): Promise<PermissionRow | undefined> {
+  const result = await pool.query<PermissionRow>(PERMISSION_SELECT_SQL, [userId]);
+  return result.rows[0];
+}
 
 /** True when the user belongs to a group named "Developer" (case-insensitive). */
 async function isInDeveloperGroup(userId: number): Promise<boolean> {
-  const [row] = await db
-    .select({ id: userGroupMembersTable.groupId })
-    .from(userGroupMembersTable)
-    .innerJoin(userGroupsTable, eq(userGroupMembersTable.groupId, userGroupsTable.id))
-    .where(and(
-      eq(userGroupMembersTable.userId, userId),
-      sql`lower(${userGroupsTable.name}) = 'developer'`,
-    ))
-    .limit(1);
-  return !!row;
+  const result = await pool.query(
+    `SELECT 1
+       FROM user_group_members membership
+       INNER JOIN user_groups g ON g.id = membership.group_id
+      WHERE membership.user_id = $1 AND lower(g.name) = 'developer'
+      LIMIT 1`,
+    [userId],
+  );
+  return result.rowCount !== null && result.rowCount > 0;
 }
 
 export interface SiteWithRole {
@@ -275,7 +311,7 @@ export async function getEffectivePermissions(
 
   // admin gets full access except canSwitchSite which requires explicit grant
   if (role === "admin") {
-    const [perm] = await db.select(USER_PERMISSION_COLUMNS).from(userPermissionsTable).where(eq(userPermissionsTable.userId, userId));
+    const perm = await getDirectPermissions(userId);
     return {
       ...FULL_ACCESS,
       canSwitchSite: perm?.canSwitchSite ?? false,
@@ -283,51 +319,14 @@ export async function getEffectivePermissions(
     };
   }
 
-  const [[perm], inDevGroup] = await Promise.all([
-    db.select(USER_PERMISSION_COLUMNS).from(userPermissionsTable).where(eq(userPermissionsTable.userId, userId)),
+  const [perm, inDevGroup, groupResult] = await Promise.all([
+    getDirectPermissions(userId),
     isInDeveloperGroup(userId),
+    pool.query<PermissionRow>(GROUP_PERMISSION_SELECT_SQL, [userId]),
   ]);
-  const groupPermissions = await db
-    .select({
-      canScan: userGroupsTable.canScan,
-      canExport: userGroupsTable.canExport,
-      canViewAllScans: userGroupsTable.canViewAllScans,
-      canEditScan: userGroupsTable.canEditScan,
-      canDeleteScan: userGroupsTable.canDeleteScan,
-      canManageScan: userGroupsTable.canManageScan,
-      canCreateProject: userGroupsTable.canCreateProject,
-      canDeleteProject: userGroupsTable.canDeleteProject,
-      canDisableJs: userGroupsTable.canDisableJs,
-      canSmartAnalysis: userGroupsTable.canSmartAnalysis,
-      canSwitchSite: userGroupsTable.canSwitchSite,
-      canCreateCrawl: userGroupsTable.canCreateCrawl,
-      canDeleteCrawl: userGroupsTable.canDeleteCrawl,
-      canViewCrawlHistory: userGroupsTable.canViewCrawlHistory,
-      canViewQualityAssurance: userGroupsTable.canViewQualityAssurance,
-      canViewSiteAccessibilityDashboard: userGroupsTable.canViewSiteAccessibilityDashboard,
-      canViewHtmlReplay: userGroupsTable.canViewHtmlReplay,
-      canManageSites: userGroupsTable.canManageSites,
-      canManageSiteTargetScore: userGroupsTable.canManageSiteTargetScore,
-      canViewIssues: userGroupsTable.canViewIssues,
-      canCreateIssue: userGroupsTable.canCreateIssue,
-      canEditIssue: userGroupsTable.canEditIssue,
-      canCommentIssue: userGroupsTable.canCommentIssue,
-      canManageIssues: userGroupsTable.canManageIssues,
-    })
-    .from(userGroupMembersTable)
-    .innerJoin(userGroupsTable, eq(userGroupMembersTable.groupId, userGroupsTable.id))
-    .where(eq(userGroupMembersTable.userId, userId));
+  const groupPermissions = groupResult.rows;
   const groupGrants = (key: keyof typeof groupPermissions[number]) =>
     groupPermissions.some((group) => group[key] === true);
-  const [targetScoreGroup] = await db
-    .select({ enabled: userGroupsTable.canManageSiteTargetScore })
-    .from(userGroupMembersTable)
-    .innerJoin(userGroupsTable, eq(userGroupMembersTable.groupId, userGroupsTable.id))
-    .where(and(
-      eq(userGroupMembersTable.userId, userId),
-      eq(userGroupsTable.canManageSiteTargetScore, true),
-    ))
-    .limit(1);
   const canViewIssues = Boolean(perm?.canViewIssues ?? true) || groupGrants("canViewIssues");
 
   return {
@@ -349,7 +348,7 @@ export async function getEffectivePermissions(
     canViewSiteAccessibilityDashboard: Boolean(perm?.canViewSiteAccessibilityDashboard ?? true) || groupGrants("canViewSiteAccessibilityDashboard"),
     canViewHtmlReplay: Boolean(perm?.canViewHtmlReplay ?? false) || groupGrants("canViewHtmlReplay"),
     canManageSites: Boolean(perm?.canManageSites ?? false) || groupGrants("canManageSites"),
-    canManageSiteTargetScore: Boolean(perm?.canManageSiteTargetScore || targetScoreGroup?.enabled || groupGrants("canManageSiteTargetScore")),
+    canManageSiteTargetScore: Boolean(perm?.canManageSiteTargetScore || groupGrants("canManageSiteTargetScore")),
     canViewIssues,
     canCreateIssue: canViewIssues && (Boolean(perm?.canCreateIssue ?? true) || groupGrants("canCreateIssue")),
     canEditIssue: canViewIssues && (Boolean(perm?.canEditIssue ?? true) || groupGrants("canEditIssue")),
