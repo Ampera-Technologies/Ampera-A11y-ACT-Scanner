@@ -108,14 +108,14 @@ function eventContent(input: {
     return {
       title: `${actorName} mentioned you in ${issue.issueKey}`,
       eventTitle: "You were mentioned in a comment",
-      summary: `${actorName} mentioned you in a comment on ${issue.issueKey}: ${excerpt}`,
+      summary: `${actorName} mentioned you in a comment on ${issue.issueKey}.`,
       body: excerpt,
     };
   }
   return {
     title: `New comment on ${issue.issueKey}`,
     eventTitle: "New issue comment",
-    summary: `${actorName} commented on ${issue.issueKey}: ${excerpt}`,
+    summary: `${actorName} commented on ${issue.issueKey}.`,
     body: excerpt,
   };
 }
@@ -143,6 +143,7 @@ export async function notifyIssueEvent(input: {
   candidateRecipientIds: number[];
   previousStatus?: string;
   commentExcerpt?: string;
+  commentBody?: string;
 }): Promise<void> {
   try {
     const [actor] = await db.select({
@@ -176,8 +177,10 @@ export async function notifyIssueEvent(input: {
       fullName: recipient.fullName,
       issueKey: input.issue.issueKey,
       issueTitle: input.issue.title,
+      issueStatus: statusLabel(input.issue.status),
       eventTitle: content.eventTitle,
       eventSummary: content.summary,
+      commentBody: input.commentBody,
       issueUrl,
     }))).catch((error) => {
       logger.error({ err: error, issueKey: input.issue.issueKey }, "Issue notification email dispatch failed");

@@ -706,6 +706,7 @@ router.post("/issues/:id/comments", requireAuth, async (req, res) => {
       actorId: userId,
       candidateRecipientIds: commentRecipients.mentioned,
       commentExcerpt,
+      commentBody: plainRichText(body),
     });
   }
   if (commentRecipients.commented.length > 0) {
@@ -715,6 +716,7 @@ router.post("/issues/:id/comments", requireAuth, async (req, res) => {
       actorId: userId,
       candidateRecipientIds: commentRecipients.commented,
       commentExcerpt,
+      commentBody: plainRichText(body),
     });
   }
   const [author] = await db.select({ authorName: usersTable.fullName }).from(usersTable).where(eq(usersTable.id, userId));

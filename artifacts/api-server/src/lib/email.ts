@@ -61,37 +61,58 @@ function escapeHtml(value: string): string {
   })[character] ?? character);
 }
 
-export async function sendIssueNotificationEmail(opts: {
+export interface IssueNotificationEmailOptions {
   to: string;
   fullName: string;
   issueKey: string;
   issueTitle: string;
+  issueStatus: string;
   eventTitle: string;
   eventSummary: string;
+  commentBody?: string;
   issueUrl: string;
-}): Promise<boolean> {
-  const { from } = await getSmtpConfig();
-  const transport = await createTransport();
-  if (!transport) {
-    logger.warn({ issueKey: opts.issueKey }, "SMTP not configured — issue notification email not sent");
-    return false;
-  }
+}
 
+export function buildIssueNotificationEmail(opts: IssueNotificationEmailOptions) {
   const subject = `[${opts.issueKey}] ${opts.eventTitle}`;
   const text = [
     `Hi ${opts.fullName},`,
     "",
     opts.eventSummary,
     "",
-    `${opts.issueKey}: ${opts.issueTitle}`,
-    opts.issueUrl,
+    "Comment:",
+    opts.commentBody?.trim() || "A new comment was added.",
+    "",
+    "Issue details:",
+    `Issue no: ${opts.issueKey}`,
+    `Title: ${opts.issueTitle}`,
+    `Status: ${opts.issueStatus}`,
+    `Open issue: ${opts.issueUrl}`,
   ].join("\n");
   const html = `
     <p>Hi ${escapeHtml(opts.fullName)},</p>
     <p>${escapeHtml(opts.eventSummary)}</p>
-    <p><strong>${escapeHtml(opts.issueKey)}:</strong> ${escapeHtml(opts.issueTitle)}</p>
+    <p><strong>Comment</strong></p>
+    <blockquote>${escapeHtml(opts.commentBody?.trim() || "A new comment was added.")}</blockquote>
+    <p><strong>Issue details</strong></p>
+    <ul>
+      <li><strong>Issue no:</strong> ${escapeHtml(opts.issueKey)}</li>
+      <li><strong>Title:</strong> ${escapeHtml(opts.issueTitle)}</li>
+      <li><strong>Status:</strong> ${escapeHtml(opts.issueStatus)}</li>
+    </ul>
     <p><a href="${escapeHtml(opts.issueUrl)}">Open issue</a></p>
   `;
+  return { subject, text, html };
+}
+
+export async function sendIssueNotificationEmail(opts: IssueNotificationEmailOptions): Promise<boolean> {
+  const { from } = await getSmtpConfig();
+  const transport = await createTransport();
+  if (!transport) {
+    logger.warn({ issueKey: opts.issueKey }, "SMTP not configured — issue notification email not sent");
+    return false;
+  }
+  const { subject, text, html } = buildIssueNotificationEmail(opts);
 
   try {
     await transport.sendMail({ from, to: opts.to, subject, text, html });
