@@ -15,6 +15,7 @@ import {
 } from "../lib/permissions";
 
 const router: IRouter = Router();
+const projectColumns = { id: projectsTable.id, name: projectsTable.name, createdAt: projectsTable.createdAt };
 
 router.get("/projects", requireAuth, async (req, res): Promise<void> => {
   const rawSiteId = req.query["siteId"];
@@ -241,7 +242,7 @@ router.get("/projects/:id", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
-  const [project] = await db.select()
+  const [project] = await db.select(projectColumns)
     .from(projectsTable)
     .where(eq(projectsTable.id, id));
 

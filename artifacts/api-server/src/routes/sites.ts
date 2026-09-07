@@ -20,6 +20,19 @@ import { getEffectiveSites, canAccessSite, getEffectivePermissions } from "../li
 import { startCrawlerJob, type CrawlerConfig } from "../lib/crawler";
 
 const router: IRouter = Router();
+const siteColumns = {
+  id: sitesTable.id, userId: sitesTable.userId, name: sitesTable.name, baseUrl: sitesTable.baseUrl, description: sitesTable.description,
+  defaultScope: sitesTable.defaultScope, sitemapUrl: sitesTable.sitemapUrl, crawlType: sitesTable.crawlType, maxPages: sitesTable.maxPages,
+  maxDepth: sitesTable.maxDepth, respectRobotsTxt: sitesTable.respectRobotsTxt, assetMode: sitesTable.assetMode,
+  scheduleEnabled: sitesTable.scheduleEnabled, scheduleIntervalDays: sitesTable.scheduleIntervalDays, timezone: sitesTable.timezone,
+  nextCrawlAt: sitesTable.nextCrawlAt, lastCompletedAt: sitesTable.lastCompletedAt, lifecycleStatus: sitesTable.lifecycleStatus,
+  targetScore: sitesTable.targetScore, createdAt: sitesTable.createdAt, updatedAt: sitesTable.updatedAt,
+};
+const siteContentRuleColumns = {
+  id: siteContentRulesTable.id, siteId: siteContentRulesTable.siteId, ruleType: siteContentRulesTable.ruleType,
+  pattern: siteContentRulesTable.pattern, patternType: siteContentRulesTable.patternType, note: siteContentRulesTable.note,
+  enabled: siteContentRulesTable.enabled, createdBy: siteContentRulesTable.createdBy, createdAt: siteContentRulesTable.createdAt, updatedAt: siteContentRulesTable.updatedAt,
+};
 
 // ── Scoring model v2 — per-rule weighted deductions ─────────────────────────
 // Every rule gets its own static weight (Mr) derived from its WCAG level ×
@@ -131,7 +144,7 @@ router.get("/sites", requireAuth, async (req: Request, res: Response): Promise<v
     return;
   }
 
-  const rows = await db.select().from(sitesTable).orderBy(desc(sitesTable.createdAt));
+  const rows = await db.select(siteColumns).from(sitesTable).orderBy(desc(sitesTable.createdAt));
 
   if (rows.length === 0) {
     res.json({ sites: rows });
@@ -349,7 +362,7 @@ router.get("/sites/:id", requireAuth, async (req: Request, res: Response): Promi
   const userIdStr: string = String(userId);
   const role: string = session?.role ?? "user";
 
-  const [site] = await db.select().from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
+  const [site] = await db.select(siteColumns).from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
   if (!site) { res.status(404).json({ error: "Site not found" }); return; }
   const access = await canAccessSite(userId, userIdStr, role, siteId);
   if (!access) { res.status(403).json({ error: "Forbidden" }); return; }
@@ -371,7 +384,7 @@ router.put("/sites/:id", requireAuth, async (req: Request, res: Response): Promi
   const role: string = session?.role ?? "user";
   const adminUser = role === "super_admin" || role === "admin";
 
-  const [site] = await db.select().from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
+  const [site] = await db.select(siteColumns).from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
   if (!site) { res.status(404).json({ error: "Site not found" }); return; }
   const access = await canAccessSite(userId, userIdStr, role, siteId);
   if (!access || access === "member") { res.status(403).json({ error: "Forbidden" }); return; }
@@ -414,7 +427,7 @@ router.delete("/sites/:id", requireAuth, async (req: Request, res: Response): Pr
   const userIdStr: string = String(userId);
   const role: string = session?.role ?? "user";
 
-  const [site] = await db.select().from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
+  const [site] = await db.select(siteColumns).from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
   if (!site) { res.status(404).json({ error: "Site not found" }); return; }
   const access = await canAccessSite(userId, userIdStr, role, siteId);
   if (!access || access === "member") { res.status(403).json({ error: "Forbidden" }); return; }
@@ -432,7 +445,7 @@ async function resolveManagedSite(req: Request, res: Response, siteId: number) {
     res.status(403).json({ error: "Site management is disabled" });
     return null;
   }
-  const [site] = await db.select().from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
+  const [site] = await db.select(siteColumns).from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
   if (!site) {
     res.status(404).json({ error: "Site not found" });
     return null;
@@ -447,7 +460,7 @@ async function resolveManagedSite(req: Request, res: Response, siteId: number) {
 
 async function resolveAccessibleSite(req: Request, res: Response, siteId: number) {
   const session = (req as any).session?.user;
-  const [site] = await db.select().from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
+  const [site] = await db.select(siteColumns).from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
   if (!site) {
     res.status(404).json({ error: "Site not found" });
     return null;
@@ -609,7 +622,7 @@ router.get("/sites/:id/overview", requireAuth, async (req: Request, res: Respons
 router.get("/sites/:id/rules", requireAuth, async (req: Request, res: Response): Promise<void> => {
   const siteId = Number(req.params["id"]);
   if (!await resolveManagedSite(req, res, siteId)) return;
-  const rules = await db.select().from(siteContentRulesTable)
+  const rules = await db.select(siteContentRuleColumns).from(siteContentRulesTable)
     .where(eq(siteContentRulesTable.siteId, siteId))
     .orderBy(siteContentRulesTable.id);
   res.json({ rules });
@@ -721,7 +734,7 @@ router.post("/sites/:id/run-now", requireAuth, async (req: Request, res: Respons
     res.status(403).json({ error: "Crawl creation is disabled" });
     return;
   }
-  const rules = await db.select().from(siteContentRulesTable)
+  const rules = await db.select(siteContentRuleColumns).from(siteContentRulesTable)
     .where(and(eq(siteContentRulesTable.siteId, siteId), eq(siteContentRulesTable.enabled, true)))
     .orderBy(siteContentRulesTable.id);
   const sessionName = `${site.name} — ${new Date().toISOString().slice(0, 10)}`;
@@ -770,7 +783,7 @@ router.get("/sites/:id/dashboard", requireAuth, async (req: Request, res: Respon
   if (!await canViewAccessibilityDashboard(req, res, siteId)) return;
   const client = await pool.connect();
   try {
-    const [siteRow] = await db.select().from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
+    const [siteRow] = await db.select(siteColumns).from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
     if (!siteRow) { res.status(404).json({ error: "Site not found" }); return; }
     const targetSetting = await client.query<{ target_wcag_level: WcagTargetLevel }>(
       `SELECT target_wcag_level FROM sites WHERE id = $1`,

@@ -12,6 +12,12 @@ import { ObjectStorageService } from "../lib/objectStorage";
 
 const router: IRouter = Router();
 const objectStorageService = new ObjectStorageService();
+const userColumns = {
+  id: usersTable.id, email: usersTable.email, username: usersTable.username, passwordHash: usersTable.passwordHash,
+  fullName: usersTable.fullName, profileImageUrl: usersTable.profileImageUrl, profileImageContentType: usersTable.profileImageContentType,
+  role: usersTable.role, isActive: usersTable.isActive, mustResetPassword: usersTable.mustResetPassword,
+  inviteToken: usersTable.inviteToken, inviteTokenExpiresAt: usersTable.inviteTokenExpiresAt, createdAt: usersTable.createdAt, updatedAt: usersTable.updatedAt,
+};
 
 // POST /api/auth/login
 router.post("/auth/login", async (req, res): Promise<void> => {
@@ -22,7 +28,7 @@ router.post("/auth/login", async (req, res): Promise<void> => {
   }
 
   const [user] = await db
-    .select()
+    .select(userColumns)
     .from(usersTable)
     .where(or(eq(usersTable.username, username), eq(usersTable.email, username)));
 
@@ -218,7 +224,7 @@ router.post("/auth/reset-password", async (req, res): Promise<void> => {
   }
 
   const [user] = await db
-    .select()
+    .select(userColumns)
     .from(usersTable)
     .where(eq(usersTable.inviteToken, token));
 
@@ -260,7 +266,7 @@ router.post("/auth/change-password", requireAuth, async (req, res): Promise<void
   }
 
   const userId = req.session!.user!.id;
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
+  const [user] = await db.select(userColumns).from(usersTable).where(eq(usersTable.id, userId));
   if (!user) {
     res.status(404).json({ error: "User not found" });
     return;
@@ -290,7 +296,7 @@ router.post("/auth/forgot-password", async (req, res): Promise<void> => {
     return;
   }
 
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email));
+  const [user] = await db.select(userColumns).from(usersTable).where(eq(usersTable.email, email));
   // Always return success to avoid user enumeration
   if (!user) {
     res.json({ ok: true });

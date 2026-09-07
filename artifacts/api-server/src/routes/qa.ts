@@ -7,6 +7,39 @@ import { canAccessSite, getEffectivePermissions, getEffectiveSites } from "../li
 
 const router: IRouter = Router();
 
+const qaPageFields = {
+  id: qaPagesTable.id,
+  scanId: qaPagesTable.scanId,
+  url: qaPagesTable.url,
+  title: qaPagesTable.title,
+  metaDescription: qaPagesTable.metaDescription,
+  h1: qaPagesTable.h1,
+  httpStatus: qaPagesTable.httpStatus,
+  wordCount: qaPagesTable.wordCount,
+  contentHash: qaPagesTable.contentHash,
+  crawlDepth: qaPagesTable.crawlDepth,
+  inlinkCount: qaPagesTable.inlinkCount,
+  isPdf: qaPagesTable.isPdf,
+  lastModified: qaPagesTable.lastModified,
+  bodyText: qaPagesTable.bodyText,
+  inSitemap: qaPagesTable.inSitemap,
+  scannedAt: qaPagesTable.scannedAt,
+} as const;
+
+const qaLinkFields = {
+  id: qaLinksTable.id,
+  scanId: qaLinksTable.scanId,
+  sourceUrl: qaLinksTable.sourceUrl,
+  destUrl: qaLinksTable.destUrl,
+  anchorText: qaLinksTable.anchorText,
+  linkType: qaLinksTable.linkType,
+  isUnsafe: qaLinksTable.isUnsafe,
+  httpStatus: qaLinksTable.httpStatus,
+  isRedirect: qaLinksTable.isRedirect,
+  redirectTo: qaLinksTable.redirectTo,
+  checkedAt: qaLinksTable.checkedAt,
+} as const;
+
 function scanId(req: Parameters<typeof router.get>[1] extends (req: infer R, ...a: unknown[]) => unknown ? R : never): number {
   return parseInt((req as { params: Record<string, string> }).params["id"] as string, 10);
 }
@@ -286,7 +319,7 @@ router.get("/scans/:id/qa/pages", requireAuth, async (req, res): Promise<void> =
   const search = (req.query["search"] as string ?? "").trim();
 
   let query = db
-    .select()
+    .select(qaPageFields)
     .from(qaPagesTable)
     .where(
       search
@@ -331,7 +364,7 @@ router.get("/scans/:id/qa/links", requireAuth, async (req, res): Promise<void> =
   if (sourceUrl) conditions.push(eq(qaLinksTable.sourceUrl, sourceUrl));
 
   const rows = await db
-    .select()
+    .select(qaLinkFields)
     .from(qaLinksTable)
     .where(and(...conditions))
     .orderBy(asc(qaLinksTable.sourceUrl), asc(qaLinksTable.destUrl))
@@ -540,7 +573,7 @@ router.get("/scans/:id/qa/priority-pages", requireAuth, async (req, res): Promis
     : eq(qaPagesTable.scanId, id);
 
   const rows = await db
-    .select()
+    .select(qaPageFields)
     .from(qaPagesTable)
     .where(pageCondition)
     .orderBy(desc(qaPagesTable.inlinkCount), asc(qaPagesTable.url))

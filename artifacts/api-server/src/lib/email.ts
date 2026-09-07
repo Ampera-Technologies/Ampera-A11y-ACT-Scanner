@@ -8,7 +8,10 @@ const SMTP_KEYS = ["smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_fro
 async function getSmtpConfig() {
   try {
     const rows = await db
-      .select()
+      .select({
+        key: appSettingsTable.key,
+        value: appSettingsTable.value,
+      })
       .from(appSettingsTable)
       .where(inArray(appSettingsTable.key, [...SMTP_KEYS]));
 

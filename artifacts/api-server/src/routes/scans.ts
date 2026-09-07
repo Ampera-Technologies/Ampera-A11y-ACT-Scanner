@@ -53,6 +53,69 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
+const scanSessionFields = {
+  id: scanSessionsTable.id,
+  userId: scanSessionsTable.userId,
+  siteId: scanSessionsTable.siteId,
+  projectId: scanSessionsTable.projectId,
+  groupId: scanSessionsTable.groupId,
+  name: scanSessionsTable.name,
+  initiatorName: scanSessionsTable.initiatorName,
+  initiatorRole: scanSessionsTable.initiatorRole,
+  status: scanSessionsTable.status,
+  totalUrls: scanSessionsTable.totalUrls,
+  scannedUrls: scanSessionsTable.scannedUrls,
+  failedUrls: scanSessionsTable.failedUrls,
+  totalIssues: scanSessionsTable.totalIssues,
+  criticalIssues: scanSessionsTable.criticalIssues,
+  options: scanSessionsTable.options,
+  createdAt: scanSessionsTable.createdAt,
+  completedAt: scanSessionsTable.completedAt,
+} as const;
+
+const accessibilityIssueFields = {
+  id: accessibilityIssuesTable.id,
+  pageId: accessibilityIssuesTable.pageId,
+  ruleId: accessibilityIssuesTable.ruleId,
+  ruleType: accessibilityIssuesTable.ruleType,
+  impact: accessibilityIssuesTable.impact,
+  description: accessibilityIssuesTable.description,
+  element: accessibilityIssuesTable.element,
+  elementContext: accessibilityIssuesTable.elementContext,
+  wcagCriteria: accessibilityIssuesTable.wcagCriteria,
+  wcagLevel: accessibilityIssuesTable.wcagLevel,
+  legalText: accessibilityIssuesTable.legalText,
+  selector: accessibilityIssuesTable.selector,
+  remediation: accessibilityIssuesTable.remediation,
+  bboxX: accessibilityIssuesTable.bboxX,
+  bboxY: accessibilityIssuesTable.bboxY,
+  bboxWidth: accessibilityIssuesTable.bboxWidth,
+  bboxHeight: accessibilityIssuesTable.bboxHeight,
+  interactionStateId: accessibilityIssuesTable.interactionStateId,
+  falsePositive: accessibilityIssuesTable.falsePositive,
+  falsePositiveNote: accessibilityIssuesTable.falsePositiveNote,
+} as const;
+
+const getAiIssueAssessmentFields = () => ({
+  id: aiIssueAssessmentsTable.id,
+  issueId: aiIssueAssessmentsTable.issueId,
+  status: aiIssueAssessmentsTable.status,
+  decision: aiIssueAssessmentsTable.decision,
+  confidence: aiIssueAssessmentsTable.confidence,
+  rationale: aiIssueAssessmentsTable.rationale,
+  evidence: aiIssueAssessmentsTable.evidence,
+  engine: aiIssueAssessmentsTable.engine,
+  provider: aiIssueAssessmentsTable.provider,
+  model: aiIssueAssessmentsTable.model,
+  attempts: aiIssueAssessmentsTable.attempts,
+  requestContext: aiIssueAssessmentsTable.requestContext,
+  errorMessage: aiIssueAssessmentsTable.errorMessage,
+  queuedAt: aiIssueAssessmentsTable.queuedAt,
+  startedAt: aiIssueAssessmentsTable.startedAt,
+  completedAt: aiIssueAssessmentsTable.completedAt,
+  updatedAt: aiIssueAssessmentsTable.updatedAt,
+} as const);
+
 function getAuthUserId(req: any): string {
   return req.session?.user?.id?.toString() ?? "";
 }
@@ -992,7 +1055,7 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
 
   if (!scanIsActive && pages.length > 0) {
     const allIssues = await db
-      .select()
+      .select(accessibilityIssueFields)
       .from(accessibilityIssuesTable)
       .where(
         inArray(
@@ -1003,7 +1066,7 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
 
     if (allIssues.length > 0) {
       const assessments = await db
-        .select()
+        .select(getAiIssueAssessmentFields())
         .from(aiIssueAssessmentsTable)
         .where(inArray(aiIssueAssessmentsTable.issueId, allIssues.map((issue) => issue.id)));
       for (const assessment of assessments) {
@@ -1870,7 +1933,7 @@ router.post("/scans/:id/cancel", async (req, res): Promise<void> => {
   }
 
   const [session] = await db
-    .select()
+    .select({ id: scanSessionsTable.id })
     .from(scanSessionsTable)
     .where(eq(scanSessionsTable.id, params.data.id));
 
@@ -1887,7 +1950,7 @@ router.post("/scans/:id/cancel", async (req, res): Promise<void> => {
     .where(eq(scanSessionsTable.id, params.data.id));
 
   const [updated] = await db
-    .select()
+    .select(scanSessionFields)
     .from(scanSessionsTable)
     .where(eq(scanSessionsTable.id, params.data.id));
 
@@ -1924,7 +1987,7 @@ router.post("/scans/:id/pause", async (req, res): Promise<void> => {
   }
 
   const [session] = await db
-    .select()
+    .select({ status: scanSessionsTable.status })
     .from(scanSessionsTable)
     .where(eq(scanSessionsTable.id, scanId));
 
@@ -1978,7 +2041,10 @@ router.post("/scans/:id/resume", async (req, res): Promise<void> => {
   }
 
   const [session] = await db
-    .select()
+    .select({
+      status: scanSessionsTable.status,
+      options: scanSessionsTable.options,
+    })
     .from(scanSessionsTable)
     .where(eq(scanSessionsTable.id, scanId));
 
@@ -2370,7 +2436,14 @@ router.post("/scans/:id/retry-url", async (req, res): Promise<void> => {
   }
 
   const [session] = await db
-    .select()
+    .select({
+      status: scanSessionsTable.status,
+      name: scanSessionsTable.name,
+      projectId: scanSessionsTable.projectId,
+      options: scanSessionsTable.options,
+      initiatorName: scanSessionsTable.initiatorName,
+      initiatorRole: scanSessionsTable.initiatorRole,
+    })
     .from(scanSessionsTable)
     .where(eq(scanSessionsTable.id, scanId));
 
@@ -2380,7 +2453,7 @@ router.post("/scans/:id/retry-url", async (req, res): Promise<void> => {
   }
 
   const [page] = await db
-    .select()
+    .select({ status: pageResultsTable.status })
     .from(pageResultsTable)
     .where(
       and(eq(pageResultsTable.scanId, scanId), eq(pageResultsTable.url, url)),
@@ -2695,7 +2768,13 @@ router.get("/scans/:id/report", async (req, res): Promise<void> => {
   }
 
   const [session] = await db
-    .select()
+    .select({
+      id: scanSessionsTable.id,
+      totalUrls: scanSessionsTable.totalUrls,
+      scannedUrls: scanSessionsTable.scannedUrls,
+      failedUrls: scanSessionsTable.failedUrls,
+      totalIssues: scanSessionsTable.totalIssues,
+    })
     .from(scanSessionsTable)
     .where(eq(scanSessionsTable.id, params.data.id));
 
@@ -3422,7 +3501,10 @@ router.post(
       res.status(403).json({ error: "Access denied" }); return;
     }
 
-    const aiRows = await db.select().from(appSettingsTable)
+    const aiRows = await db.select({
+      key: appSettingsTable.key,
+      value: appSettingsTable.value,
+    }).from(appSettingsTable)
       .where(inArray(appSettingsTable.key, [
         "smart_analysis_ai_enabled", "ai_external_enabled",
         "ai_external_api_key", "ai_external_provider", "ai_external_model",

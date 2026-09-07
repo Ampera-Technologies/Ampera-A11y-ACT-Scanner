@@ -27,6 +27,44 @@ import { scanPage, fetchRawHtmlViaBrowser } from "./scanner";
 import { fetchSitemapUrls } from "./sitemap";
 import { logger } from "./logger";
 
+const crawlerDiscoveryCacheFields = {
+  id: crawlerDiscoveryCacheTable.id,
+  domain: crawlerDiscoveryCacheTable.domain,
+  seedUrl: crawlerDiscoveryCacheTable.seedUrl,
+  sourceSessionId: crawlerDiscoveryCacheTable.sourceSessionId,
+  urlCount: crawlerDiscoveryCacheTable.urlCount,
+  cachedAt: crawlerDiscoveryCacheTable.cachedAt,
+};
+
+const crawlerPageFields = {
+  id: crawlerPagesTable.id,
+  sessionId: crawlerPagesTable.sessionId,
+  url: crawlerPagesTable.url,
+  urlHash: crawlerPagesTable.urlHash,
+  status: crawlerPagesTable.status,
+  depth: crawlerPagesTable.depth,
+  discoveredFrom: crawlerPagesTable.discoveredFrom,
+  contentHash: crawlerPagesTable.contentHash,
+  httpStatus: crawlerPagesTable.httpStatus,
+  issueCount: crawlerPagesTable.issueCount,
+  ruleCount: crawlerPagesTable.ruleCount,
+  pageType: crawlerPagesTable.pageType,
+  errorMessage: crawlerPagesTable.errorMessage,
+  scannedAt: crawlerPagesTable.scannedAt,
+  capturedHtml: crawlerPagesTable.capturedHtml,
+};
+
+const crawlerSessionFields = {
+  id: crawlerSessionsTable.id,
+  userId: crawlerSessionsTable.userId,
+  name: crawlerSessionsTable.name,
+  seedUrl: crawlerSessionsTable.seedUrl,
+  status: crawlerSessionsTable.status,
+  config: crawlerSessionsTable.config,
+  scanSessionId: crawlerSessionsTable.scanSessionId,
+  discoveredAt: crawlerSessionsTable.discoveredAt,
+};
+
 puppeteerExtra.use(StealthPlugin());
 
 /**
@@ -540,7 +578,7 @@ async function saveDiscoveryCache(sessionId: number, domain: string, seedUrl: st
 
 /** Load discovered URLs from a previous session's cache into this session. Returns true if cache was applied. */
 async function applyDiscoveryCache(sessionId: number, domain: string, maxPages: number): Promise<boolean> {
-  const [cache] = await db.select()
+  const [cache] = await db.select(crawlerDiscoveryCacheFields)
     .from(crawlerDiscoveryCacheTable)
     .where(eq(crawlerDiscoveryCacheTable.domain, domain))
     .limit(1);
@@ -568,7 +606,7 @@ async function applyDiscoveryCache(sessionId: number, domain: string, maxPages: 
 }
 
 export async function getDiscoveryCache(domain: string) {
-  const [row] = await db.select()
+  const [row] = await db.select(crawlerDiscoveryCacheFields)
     .from(crawlerDiscoveryCacheTable)
     .where(eq(crawlerDiscoveryCacheTable.domain, domain))
     .limit(1);
@@ -732,7 +770,7 @@ function shouldEnqueue(
  */
 async function claimNextPendingPage(sessionId: number) {
   return db.transaction(async (tx) => {
-    const [row] = await tx.select()
+    const [row] = await tx.select(crawlerPageFields)
       .from(crawlerPagesTable)
       .where(and(eq(crawlerPagesTable.sessionId, sessionId), eq(crawlerPagesTable.status, "pending")))
       .orderBy(crawlerPagesTable.id)
@@ -1004,7 +1042,7 @@ async function runScanPhase(
         .from(crawlerSessionsTable).where(eq(crawlerSessionsTable.id, sessionId)).limit(1);
       if (!current || current.status !== "scanning") break;
 
-      const [page] = await db.select()
+      const [page] = await db.select(crawlerPageFields)
         .from(crawlerPagesTable)
         .where(and(eq(crawlerPagesTable.sessionId, sessionId), eq(crawlerPagesTable.status, "discovered")))
         .orderBy(crawlerPagesTable.id)
@@ -1322,7 +1360,7 @@ async function runScanPhase(
 
 // ── Public: start crawler ─────────────────────────────────────────────────────
 export async function startCrawlerJob(sessionId: number): Promise<void> {
-  const [session] = await db.select()
+  const [session] = await db.select(crawlerSessionFields)
     .from(crawlerSessionsTable)
     .where(eq(crawlerSessionsTable.id, sessionId))
     .limit(1);
@@ -1549,7 +1587,20 @@ export async function startCrawlerJob(sessionId: number): Promise<void> {
  * site twice while a previous run is still active.
  */
 export async function runScheduledCrawls(): Promise<number> {
-  const dueSites = await db.select()
+  const dueSites = await db.select({
+    id: sitesTable.id,
+    userId: sitesTable.userId,
+    name: sitesTable.name,
+    baseUrl: sitesTable.baseUrl,
+    defaultScope: sitesTable.defaultScope,
+    sitemapUrl: sitesTable.sitemapUrl,
+    maxPages: sitesTable.maxPages,
+    maxDepth: sitesTable.maxDepth,
+    respectRobotsTxt: sitesTable.respectRobotsTxt,
+    assetMode: sitesTable.assetMode,
+    scheduleIntervalDays: sitesTable.scheduleIntervalDays,
+    timezone: sitesTable.timezone,
+  })
     .from(sitesTable)
     .where(and(
       eq(sitesTable.scheduleEnabled, true),
@@ -1574,7 +1625,14 @@ export async function runScheduledCrawls(): Promise<number> {
       .returning({ id: sitesTable.id });
     if (claimed.length === 0) continue;
 
-    const rules = await db.select()
+    const rules = await db.select({
+      id: siteContentRulesTable.id,
+      ruleType: siteContentRulesTable.ruleType,
+      pattern: siteContentRulesTable.pattern,
+      patternType: siteContentRulesTable.patternType,
+      note: siteContentRulesTable.note,
+      enabled: siteContentRulesTable.enabled,
+    })
       .from(siteContentRulesTable)
       .where(and(eq(siteContentRulesTable.siteId, site.id), eq(siteContentRulesTable.enabled, true)))
       .orderBy(siteContentRulesTable.id);
@@ -1649,7 +1707,7 @@ export async function runDueCrawlerSessions(): Promise<number> {
 
 // ── Public: resume crawler ────────────────────────────────────────────────────
 export async function resumeCrawlerJob(sessionId: number): Promise<void> {
-  const [session] = await db.select()
+  const [session] = await db.select(crawlerSessionFields)
     .from(crawlerSessionsTable)
     .where(eq(crawlerSessionsTable.id, sessionId))
     .limit(1);
@@ -1808,7 +1866,7 @@ async function skipExcludedPageGroups(sessionId: number, config: CrawlerConfig):
 }
 
 export async function startScanPhase(sessionId: number): Promise<void> {
-  const [session] = await db.select().from(crawlerSessionsTable)
+  const [session] = await db.select(crawlerSessionFields).from(crawlerSessionsTable)
     .where(eq(crawlerSessionsTable.id, sessionId)).limit(1);
 
   if (!session || session.status !== "crawled") {
@@ -1929,7 +1987,7 @@ async function updateCrawlerStats(sessionId: number): Promise<void> {
  * automatically — no restart is needed.
  */
 export async function retryFailedPages(sessionId: number): Promise<{ ok: boolean; reset: number }> {
-  const [session] = await db.select()
+  const [session] = await db.select(crawlerSessionFields)
     .from(crawlerSessionsTable)
     .where(eq(crawlerSessionsTable.id, sessionId))
     .limit(1);
@@ -2059,7 +2117,11 @@ async function checkBrokenLinks(
  */
 export async function resumeOrphanedCrawlerSessions(): Promise<void> {
   try {
-    const orphaned = await db.select()
+    const orphaned = await db.select({
+      id: crawlerSessionsTable.id,
+      status: crawlerSessionsTable.status,
+      config: crawlerSessionsTable.config,
+    })
       .from(crawlerSessionsTable)
       .where(inArray(crawlerSessionsTable.status, ["discovering", "crawled", "scanning"]));
 

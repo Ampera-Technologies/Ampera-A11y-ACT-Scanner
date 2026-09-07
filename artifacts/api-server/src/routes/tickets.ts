@@ -6,6 +6,11 @@ import { createNotification } from "../lib/notifications";
 import { requireAuth, requireAdmin } from "../middlewares/authMiddleware";
 
 const router: IRouter = Router();
+const ticketColumns = {
+  id: supportTicketsTable.id, userId: supportTicketsTable.userId, subject: supportTicketsTable.subject,
+  description: supportTicketsTable.description, status: supportTicketsTable.status, priority: supportTicketsTable.priority,
+  createdAt: supportTicketsTable.createdAt, updatedAt: supportTicketsTable.updatedAt,
+};
 
 // GET /api/tickets — list tickets (admin: all; user: own)
 router.get("/tickets", requireAuth, async (req, res): Promise<void> => {
@@ -144,7 +149,7 @@ router.put("/tickets/:id", requireAuth, async (req, res): Promise<void> => {
   const user = req.session!.user!;
   const isAdmin = user.role === "super_admin" || user.role === "admin";
 
-  const [ticket] = await db.select().from(supportTicketsTable).where(eq(supportTicketsTable.id, id));
+  const [ticket] = await db.select(ticketColumns).from(supportTicketsTable).where(eq(supportTicketsTable.id, id));
   if (!ticket) { res.status(404).json({ error: "Ticket not found" }); return; }
   if (!isAdmin && ticket.userId !== user.id) { res.status(403).json({ error: "Forbidden" }); return; }
 
@@ -171,7 +176,7 @@ router.post("/tickets/:id/replies", requireAuth, async (req, res): Promise<void>
   const user = req.session!.user!;
   const isAdmin = user.role === "super_admin" || user.role === "admin";
 
-  const [ticket] = await db.select().from(supportTicketsTable).where(eq(supportTicketsTable.id, ticketId));
+  const [ticket] = await db.select(ticketColumns).from(supportTicketsTable).where(eq(supportTicketsTable.id, ticketId));
   if (!ticket) { res.status(404).json({ error: "Ticket not found" }); return; }
   if (!isAdmin && ticket.userId !== user.id) { res.status(403).json({ error: "Forbidden" }); return; }
 

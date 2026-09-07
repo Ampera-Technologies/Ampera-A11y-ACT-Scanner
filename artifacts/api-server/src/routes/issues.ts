@@ -33,6 +33,35 @@ export const ISSUE_ATTACHMENT_ROUTE_MARKER = "issues-attachments-r2-v1";
 const statuses = ALL_ISSUE_STATUSES;
 const priorities = ["lowest", "low", "medium", "high", "highest"];
 const issueAttachmentStorage = new IssueAttachmentStorageService();
+const issueColumns = {
+  id: appIssuesTable.id, issueKey: appIssuesTable.issueKey, type: appIssuesTable.type, title: appIssuesTable.title,
+  description: appIssuesTable.description, status: appIssuesTable.status, priority: appIssuesTable.priority, severity: appIssuesTable.severity,
+  projectId: appIssuesTable.projectId, siteId: appIssuesTable.siteId, scanId: appIssuesTable.scanId, pageId: appIssuesTable.pageId,
+  ruleId: appIssuesTable.ruleId, selector: appIssuesTable.selector, sourceDescription: appIssuesTable.sourceDescription,
+  assigneeId: appIssuesTable.assigneeId, reporterId: appIssuesTable.reporterId, labels: appIssuesTable.labels, checklist: appIssuesTable.checklist,
+  acceptanceCriteria: appIssuesTable.acceptanceCriteria, environment: appIssuesTable.environment, stepsToReproduce: appIssuesTable.stepsToReproduce,
+  expectedResult: appIssuesTable.expectedResult, actualResult: appIssuesTable.actualResult, dueDate: appIssuesTable.dueDate, sprint: appIssuesTable.sprint,
+  relatedIssueIds: appIssuesTable.relatedIssueIds, epicId: appIssuesTable.epicId, customFields: appIssuesTable.customFields,
+  archived: appIssuesTable.archived, createdAt: appIssuesTable.createdAt, updatedAt: appIssuesTable.updatedAt,
+};
+const issueLinkColumns = {
+  id: appIssueLinksTable.id, sourceIssueId: appIssueLinksTable.sourceIssueId, targetIssueId: appIssueLinksTable.targetIssueId,
+  linkType: appIssueLinksTable.linkType, createdBy: appIssueLinksTable.createdBy, createdAt: appIssueLinksTable.createdAt,
+};
+const issueCommentColumns = {
+  id: appIssueCommentsTable.id, issueId: appIssueCommentsTable.issueId, authorId: appIssueCommentsTable.authorId,
+  body: appIssueCommentsTable.body, mentions: appIssueCommentsTable.mentions, createdAt: appIssueCommentsTable.createdAt, updatedAt: appIssueCommentsTable.updatedAt,
+};
+const issueActivityColumns = {
+  id: appIssueActivityTable.id, issueId: appIssueActivityTable.issueId, actorId: appIssueActivityTable.actorId,
+  action: appIssueActivityTable.action, details: appIssueActivityTable.details, createdAt: appIssueActivityTable.createdAt,
+};
+const issueAttachmentColumns = {
+  id: appIssueAttachmentsTable.id, issueId: appIssueAttachmentsTable.issueId, commentId: appIssueAttachmentsTable.commentId,
+  uploadedBy: appIssueAttachmentsTable.uploadedBy, objectPath: appIssueAttachmentsTable.objectPath, filename: appIssueAttachmentsTable.filename,
+  contentType: appIssueAttachmentsTable.contentType, size: appIssueAttachmentsTable.size, pending: appIssueAttachmentsTable.pending,
+  expiresAt: appIssueAttachmentsTable.expiresAt, createdAt: appIssueAttachmentsTable.createdAt,
+};
 const MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024;
 const ACCEPTED_ATTACHMENT_TYPES = new Set([
   "image/jpeg", "image/png", "image/webp", "image/gif",
@@ -68,7 +97,7 @@ async function visibleWhere(_req: any) {
 }
 
 async function canSeeIssue(req: any, id: number) {
-  const [issue] = await db.select().from(appIssuesTable).where(and(eq(appIssuesTable.id, id), await visibleWhere(req))).limit(1);
+  const [issue] = await db.select(issueColumns).from(appIssuesTable).where(and(eq(appIssuesTable.id, id), await visibleWhere(req))).limit(1);
   return issue;
 }
 
@@ -210,7 +239,7 @@ async function saveAttachments(issueId: number, userId: number, attachments: unk
   }
   if (!clean.length) return [];
   const paths = clean.map((attachment) => attachment!.objectPath);
-  const pending = await db.select().from(appIssueAttachmentsTable).where(and(
+  const pending = await db.select(issueAttachmentColumns).from(appIssueAttachmentsTable).where(and(
     eq(appIssueAttachmentsTable.issueId, issueId),
     eq(appIssueAttachmentsTable.uploadedBy, userId),
     eq(appIssueAttachmentsTable.pending, true),
@@ -247,7 +276,40 @@ router.get("/issues", requireAuth, async (req, res) => {
   if (isIssueType(String(req.query.type))) conditions.push(eq(appIssuesTable.type, String(req.query.type)));
   if (Number.isInteger(siteId) && siteId > 0) conditions.push(eq(appIssuesTable.siteId, siteId));
   const issues = await db.select({
-    issue: appIssuesTable,
+    issue: {
+      id: appIssuesTable.id,
+      issueKey: appIssuesTable.issueKey,
+      type: appIssuesTable.type,
+      title: appIssuesTable.title,
+      description: appIssuesTable.description,
+      status: appIssuesTable.status,
+      priority: appIssuesTable.priority,
+      severity: appIssuesTable.severity,
+      projectId: appIssuesTable.projectId,
+      siteId: appIssuesTable.siteId,
+      scanId: appIssuesTable.scanId,
+      pageId: appIssuesTable.pageId,
+      ruleId: appIssuesTable.ruleId,
+      selector: appIssuesTable.selector,
+      sourceDescription: appIssuesTable.sourceDescription,
+      assigneeId: appIssuesTable.assigneeId,
+      reporterId: appIssuesTable.reporterId,
+      labels: appIssuesTable.labels,
+      checklist: appIssuesTable.checklist,
+      acceptanceCriteria: appIssuesTable.acceptanceCriteria,
+      environment: appIssuesTable.environment,
+      stepsToReproduce: appIssuesTable.stepsToReproduce,
+      expectedResult: appIssuesTable.expectedResult,
+      actualResult: appIssuesTable.actualResult,
+      dueDate: appIssuesTable.dueDate,
+      sprint: appIssuesTable.sprint,
+      relatedIssueIds: appIssuesTable.relatedIssueIds,
+      epicId: appIssuesTable.epicId,
+      customFields: appIssuesTable.customFields,
+      archived: appIssuesTable.archived,
+      createdAt: appIssuesTable.createdAt,
+      updatedAt: appIssuesTable.updatedAt,
+    },
     reporterName: sql<string | null>`(SELECT full_name FROM users WHERE users.id = ${appIssuesTable.reporterId})`,
     assigneeName: sql<string | null>`(SELECT full_name FROM users WHERE users.id = ${appIssuesTable.assigneeId})`,
     siteName: sitesTable.name,
@@ -308,10 +370,10 @@ router.get("/issues/:id", requireAuth, async (req, res) => {
   const issue = await canSeeIssue(req, Number(req.params.id));
   if (!issue) { res.status(404).json({ error: "Issue not found" }); return; }
   const [comments, attachments, rawLinks, epicIssues] = await Promise.all([
-    db.select({ comment: appIssueCommentsTable, authorName: usersTable.fullName }).from(appIssueCommentsTable)
+    db.select({ comment: issueCommentColumns, authorName: usersTable.fullName }).from(appIssueCommentsTable)
       .innerJoin(usersTable, eq(usersTable.id, appIssueCommentsTable.authorId)).where(eq(appIssueCommentsTable.issueId, issue.id)).orderBy(asc(appIssueCommentsTable.createdAt)),
-    db.select().from(appIssueAttachmentsTable).where(eq(appIssueAttachmentsTable.issueId, issue.id)).orderBy(asc(appIssueAttachmentsTable.createdAt)),
-    db.select().from(appIssueLinksTable).where(or(
+    db.select(issueAttachmentColumns).from(appIssueAttachmentsTable).where(eq(appIssueAttachmentsTable.issueId, issue.id)).orderBy(asc(appIssueAttachmentsTable.createdAt)),
+    db.select(issueLinkColumns).from(appIssueLinksTable).where(or(
       eq(appIssueLinksTable.sourceIssueId, issue.id),
       eq(appIssueLinksTable.targetIssueId, issue.id),
     )),
@@ -327,7 +389,7 @@ router.get("/issues/:id", requireAuth, async (req, res) => {
       eq(appIssuesTable.epicId, issue.id),
     )),
   ]);
-  const activity = await db.select({ event: appIssueActivityTable, actorName: usersTable.fullName }).from(appIssueActivityTable)
+  const activity = await db.select({ event: issueActivityColumns, actorName: usersTable.fullName }).from(appIssueActivityTable)
     .innerJoin(usersTable, eq(usersTable.id, appIssueActivityTable.actorId)).where(eq(appIssueActivityTable.issueId, issue.id)).orderBy(desc(appIssueActivityTable.createdAt));
   const toAttachment = (attachment: typeof attachments[number]) => ({
     ...attachment,
@@ -438,7 +500,7 @@ router.post("/issues/:id/links", requireAuth, async (req, res) => {
   const result = await db.transaction(async (tx) => {
     // Serializes relationship writes so concurrent hierarchy edits cannot form a cycle.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(289105)`);
-    const rawExistingLinks = await tx.select().from(appIssueLinksTable);
+    const rawExistingLinks = await tx.select(issueLinkColumns).from(appIssueLinksTable);
     const existingLinks = rawExistingLinks.filter((link) => isIssueLinkType(link.linkType)).map((link) => ({
       sourceIssueId: link.sourceIssueId,
       targetIssueId: link.targetIssueId,
@@ -481,7 +543,7 @@ router.delete("/issues/:id/links/:linkId", requireAuth, async (req, res) => {
   if (!(await requireIssuePermission(req, res, "canEditIssue"))) return;
   const issue = await canSeeIssue(req, Number(req.params.id));
   if (!issue) { res.status(404).json({ error: "Issue not found" }); return; }
-  const [link] = await db.select().from(appIssueLinksTable).where(and(
+  const [link] = await db.select(issueLinkColumns).from(appIssueLinksTable).where(and(
     eq(appIssueLinksTable.id, Number(req.params.linkId)),
     or(eq(appIssueLinksTable.sourceIssueId, issue.id), eq(appIssueLinksTable.targetIssueId, issue.id)),
   )).limit(1);
@@ -535,7 +597,7 @@ router.put("/issues/:issueId/attachments/:attachmentId/upload", requireAuth, asy
   if (!issue) { res.status(404).json({ error: "Issue not found" }); return; }
   if (!(await canUploadIssueAttachment(req))) { res.status(403).json({ error: "You do not have permission to upload issue evidence" }); return; }
   const userId = Number(req.session!.user!.id);
-  const [pending] = await db.select().from(appIssueAttachmentsTable).where(and(
+  const [pending] = await db.select(issueAttachmentColumns).from(appIssueAttachmentsTable).where(and(
     eq(appIssueAttachmentsTable.id, Number(req.params.attachmentId)),
     eq(appIssueAttachmentsTable.issueId, issue.id),
     eq(appIssueAttachmentsTable.uploadedBy, userId),
@@ -594,7 +656,7 @@ router.get("/issues/:issueId/attachments/:attachmentId", requireAuth, async (req
   if (!(await requireIssuePermission(req, res, "canViewIssues"))) return;
   const issue = await canSeeIssue(req, Number(req.params.issueId));
   if (!issue) { res.status(404).end(); return; }
-  const [attachment] = await db.select().from(appIssueAttachmentsTable)
+  const [attachment] = await db.select(issueAttachmentColumns).from(appIssueAttachmentsTable)
     .where(and(eq(appIssueAttachmentsTable.id, Number(req.params.attachmentId)), eq(appIssueAttachmentsTable.issueId, issue.id), eq(appIssueAttachmentsTable.pending, false))).limit(1);
   if (!attachment) { res.status(404).end(); return; }
   try {
@@ -665,7 +727,7 @@ router.patch("/issues/:issueId/comments/:commentId", requireAuth, async (req, re
     return;
   }
 
-  const [comment] = await db.select().from(appIssueCommentsTable).where(and(
+  const [comment] = await db.select(issueCommentColumns).from(appIssueCommentsTable).where(and(
     eq(appIssueCommentsTable.id, commentId),
     eq(appIssueCommentsTable.issueId, issue.id),
   ));

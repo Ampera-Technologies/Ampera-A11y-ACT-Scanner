@@ -17,7 +17,7 @@ const AI_PUBLIC_KEYS = [
 // GET /api/ai/config
 router.get("/ai/config", requireAuth, async (_req, res): Promise<void> => {
   const rows = await db
-    .select()
+    .select({ key: appSettingsTable.key, value: appSettingsTable.value })
     .from(appSettingsTable)
     .where(inArray(appSettingsTable.key, [...AI_PUBLIC_KEYS]));
   const map: Record<string, string> = {};
@@ -35,7 +35,7 @@ router.get("/ai/config", requireAuth, async (_req, res): Promise<void> => {
 router.post("/ai/analyze", requireAuth, async (req, res): Promise<void> => {
   const ALL_AI_KEYS = [...AI_PUBLIC_KEYS, "ai_external_api_key"] as const;
   const rows = await db
-    .select()
+    .select({ key: appSettingsTable.key, value: appSettingsTable.value })
     .from(appSettingsTable)
     .where(inArray(appSettingsTable.key, [...ALL_AI_KEYS]));
   const cfg: Record<string, string> = {};

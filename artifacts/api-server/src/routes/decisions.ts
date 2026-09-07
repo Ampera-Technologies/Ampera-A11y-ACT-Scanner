@@ -5,6 +5,15 @@ import { requireAuth } from "../middlewares/authMiddleware";
 import { z } from "zod";
 
 const router: IRouter = Router();
+const decisionColumns = {
+  id: issueDecisionsTable.id, scanSessionId: issueDecisionsTable.scanSessionId, pageId: issueDecisionsTable.pageId,
+  issueId: issueDecisionsTable.issueId, ruleId: issueDecisionsTable.ruleId, selector: issueDecisionsTable.selector,
+  elementSnippet: issueDecisionsTable.elementSnippet, pageUrl: issueDecisionsTable.pageUrl, issueDescription: issueDecisionsTable.issueDescription,
+  decisionType: issueDecisionsTable.decisionType, scope: issueDecisionsTable.scope, classPattern: issueDecisionsTable.classPattern,
+  pagesAffected: issueDecisionsTable.pagesAffected, reason: issueDecisionsTable.reason, submittedBy: issueDecisionsTable.submittedBy,
+  submitterName: issueDecisionsTable.submitterName, reviewStatus: issueDecisionsTable.reviewStatus, reviewedBy: issueDecisionsTable.reviewedBy,
+  reviewerName: issueDecisionsTable.reviewerName, reviewComment: issueDecisionsTable.reviewComment, createdAt: issueDecisionsTable.createdAt, updatedAt: issueDecisionsTable.updatedAt,
+};
 
 const CreateDecisionBody = z.object({
   issueId: z.number().optional(),
@@ -84,7 +93,7 @@ router.get("/scans/:scanId/decisions", requireAuth, async (req, res): Promise<vo
   const scanId = parseInt(req.params.scanId as string, 10);
   if (isNaN(scanId)) { res.status(400).json({ error: "Invalid scan ID" }); return; }
 
-  const rows = await db.select().from(issueDecisionsTable)
+  const rows = await db.select(decisionColumns).from(issueDecisionsTable)
     .where(eq(issueDecisionsTable.scanSessionId, scanId))
     .orderBy(desc(issueDecisionsTable.createdAt));
 
@@ -100,7 +109,7 @@ router.delete("/decisions/:id", requireAuth, async (req, res): Promise<void> => 
   const role = req.session?.user?.role;
   const isAdmin = role === "super_admin" || role === "admin";
 
-  const existing = await db.select().from(issueDecisionsTable)
+  const existing = await db.select(decisionColumns).from(issueDecisionsTable)
     .where(eq(issueDecisionsTable.id, id)).limit(1);
   if (!existing[0]) { res.status(404).json({ error: "Decision not found" }); return; }
   if (!isAdmin && existing[0].submittedBy !== Number(userId)) {
@@ -173,7 +182,7 @@ router.get("/decisions", requireAuth, async (req, res): Promise<void> => {
     conditions.push(inArray(issueDecisionsTable.scanSessionId, ids));
   }
 
-  const rows = await db.select().from(issueDecisionsTable)
+  const rows = await db.select(decisionColumns).from(issueDecisionsTable)
     .where(conditions.length > 0 ? and(...(conditions as [ReturnType<typeof eq>, ...ReturnType<typeof eq>[]]))  : undefined)
     .orderBy(desc(issueDecisionsTable.createdAt))
     .limit(500);

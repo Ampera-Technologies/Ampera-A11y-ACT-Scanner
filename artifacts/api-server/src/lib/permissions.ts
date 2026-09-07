@@ -58,6 +58,40 @@ const FULL_ACCESS: EffectivePermissions = {
   allowedRules: null,
 };
 
+// Keep this projection explicit. Whole-table projections have caused
+// orderSelectedFields() failures in bundled production builds when table
+// metadata is traversed recursively.
+const USER_PERMISSION_COLUMNS = {
+  userId: userPermissionsTable.userId,
+  canScan: userPermissionsTable.canScan,
+  canExport: userPermissionsTable.canExport,
+  canViewAllScans: userPermissionsTable.canViewAllScans,
+  canEditScan: userPermissionsTable.canEditScan,
+  canDeleteScan: userPermissionsTable.canDeleteScan,
+  canManageScan: userPermissionsTable.canManageScan,
+  canCreateProject: userPermissionsTable.canCreateProject,
+  canDeleteProject: userPermissionsTable.canDeleteProject,
+  canDisableJs: userPermissionsTable.canDisableJs,
+  canSmartAnalysis: userPermissionsTable.canSmartAnalysis,
+  canSwitchSite: userPermissionsTable.canSwitchSite,
+  canCreateCrawl: userPermissionsTable.canCreateCrawl,
+  canDeleteCrawl: userPermissionsTable.canDeleteCrawl,
+  canViewCrawlHistory: userPermissionsTable.canViewCrawlHistory,
+  canViewQualityAssurance: userPermissionsTable.canViewQualityAssurance,
+  canViewSiteAccessibilityDashboard: userPermissionsTable.canViewSiteAccessibilityDashboard,
+  canViewHtmlReplay: userPermissionsTable.canViewHtmlReplay,
+  canManageSites: userPermissionsTable.canManageSites,
+  canManageSiteTargetScore: userPermissionsTable.canManageSiteTargetScore,
+  canViewIssues: userPermissionsTable.canViewIssues,
+  canCreateIssue: userPermissionsTable.canCreateIssue,
+  canEditIssue: userPermissionsTable.canEditIssue,
+  canCommentIssue: userPermissionsTable.canCommentIssue,
+  canManageIssues: userPermissionsTable.canManageIssues,
+  allowedRules: userPermissionsTable.allowedRules,
+  updatedAt: userPermissionsTable.updatedAt,
+  updatedBy: userPermissionsTable.updatedBy,
+};
+
 /** True when the user belongs to a group named "Developer" (case-insensitive). */
 async function isInDeveloperGroup(userId: number): Promise<boolean> {
   const [row] = await db
@@ -241,7 +275,7 @@ export async function getEffectivePermissions(
 
   // admin gets full access except canSwitchSite which requires explicit grant
   if (role === "admin") {
-    const [perm] = await db.select().from(userPermissionsTable).where(eq(userPermissionsTable.userId, userId));
+    const [perm] = await db.select(USER_PERMISSION_COLUMNS).from(userPermissionsTable).where(eq(userPermissionsTable.userId, userId));
     return {
       ...FULL_ACCESS,
       canSwitchSite: perm?.canSwitchSite ?? false,
@@ -250,7 +284,7 @@ export async function getEffectivePermissions(
   }
 
   const [[perm], inDevGroup] = await Promise.all([
-    db.select().from(userPermissionsTable).where(eq(userPermissionsTable.userId, userId)),
+    db.select(USER_PERMISSION_COLUMNS).from(userPermissionsTable).where(eq(userPermissionsTable.userId, userId)),
     isInDeveloperGroup(userId),
   ]);
   const groupPermissions = await db

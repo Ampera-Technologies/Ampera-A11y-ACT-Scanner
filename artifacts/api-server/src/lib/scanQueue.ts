@@ -17,6 +17,103 @@ import { logger } from "./logger";
 import { randomBytes, createHash } from "crypto";
 import { enqueueIssueAssessments, shouldQueueAIAssessments } from "./ai-assessment";
 
+const accessibilityIssueFields = {
+  id: accessibilityIssuesTable.id,
+  pageId: accessibilityIssuesTable.pageId,
+  ruleId: accessibilityIssuesTable.ruleId,
+  ruleType: accessibilityIssuesTable.ruleType,
+  impact: accessibilityIssuesTable.impact,
+  description: accessibilityIssuesTable.description,
+  element: accessibilityIssuesTable.element,
+  elementContext: accessibilityIssuesTable.elementContext,
+  wcagCriteria: accessibilityIssuesTable.wcagCriteria,
+  wcagLevel: accessibilityIssuesTable.wcagLevel,
+  legalText: accessibilityIssuesTable.legalText,
+  selector: accessibilityIssuesTable.selector,
+  remediation: accessibilityIssuesTable.remediation,
+  bboxX: accessibilityIssuesTable.bboxX,
+  bboxY: accessibilityIssuesTable.bboxY,
+  bboxWidth: accessibilityIssuesTable.bboxWidth,
+  bboxHeight: accessibilityIssuesTable.bboxHeight,
+  interactionStateId: accessibilityIssuesTable.interactionStateId,
+  falsePositive: accessibilityIssuesTable.falsePositive,
+  falsePositiveNote: accessibilityIssuesTable.falsePositiveNote,
+};
+
+const pageInteractionStateFields = {
+  id: pageInteractionStatesTable.id,
+  pageId: pageInteractionStatesTable.pageId,
+  stateKey: pageInteractionStatesTable.stateKey,
+  triggerSelector: pageInteractionStatesTable.triggerSelector,
+  triggerLabel: pageInteractionStatesTable.triggerLabel,
+  screenshot: pageInteractionStatesTable.screenshot,
+  pageHtml: pageInteractionStatesTable.pageHtml,
+};
+
+const qaPageFields = {
+  id: qaPagesTable.id,
+  scanId: qaPagesTable.scanId,
+  url: qaPagesTable.url,
+  title: qaPagesTable.title,
+  metaDescription: qaPagesTable.metaDescription,
+  h1: qaPagesTable.h1,
+  httpStatus: qaPagesTable.httpStatus,
+  wordCount: qaPagesTable.wordCount,
+  contentHash: qaPagesTable.contentHash,
+  crawlDepth: qaPagesTable.crawlDepth,
+  inlinkCount: qaPagesTable.inlinkCount,
+  isPdf: qaPagesTable.isPdf,
+  lastModified: qaPagesTable.lastModified,
+  bodyText: qaPagesTable.bodyText,
+  inSitemap: qaPagesTable.inSitemap,
+  scannedAt: qaPagesTable.scannedAt,
+};
+
+const qaLinkFields = {
+  id: qaLinksTable.id,
+  scanId: qaLinksTable.scanId,
+  sourceUrl: qaLinksTable.sourceUrl,
+  destUrl: qaLinksTable.destUrl,
+  anchorText: qaLinksTable.anchorText,
+  linkType: qaLinksTable.linkType,
+  isUnsafe: qaLinksTable.isUnsafe,
+  httpStatus: qaLinksTable.httpStatus,
+  isRedirect: qaLinksTable.isRedirect,
+  redirectTo: qaLinksTable.redirectTo,
+  checkedAt: qaLinksTable.checkedAt,
+};
+
+const qaImageFields = {
+  id: qaImagesTable.id,
+  scanId: qaImagesTable.scanId,
+  sourceUrl: qaImagesTable.sourceUrl,
+  src: qaImagesTable.src,
+  alt: qaImagesTable.alt,
+  width: qaImagesTable.width,
+  height: qaImagesTable.height,
+  isExternal: qaImagesTable.isExternal,
+  httpStatus: qaImagesTable.httpStatus,
+  isBroken: qaImagesTable.isBroken,
+  checkedAt: qaImagesTable.checkedAt,
+};
+
+const pageResultFields = {
+  id: pageResultsTable.id,
+  scanId: pageResultsTable.scanId,
+  url: pageResultsTable.url,
+  status: pageResultsTable.status,
+  issueCount: pageResultsTable.issueCount,
+  criticalCount: pageResultsTable.criticalCount,
+  errorMessage: pageResultsTable.errorMessage,
+  scannedAt: pageResultsTable.scannedAt,
+  loadDurationMs: pageResultsTable.loadDurationMs,
+  scanDurationMs: pageResultsTable.scanDurationMs,
+  screenshot: pageResultsTable.screenshot,
+  pageHtml: pageResultsTable.pageHtml,
+  contentHash: pageResultsTable.contentHash,
+  carriedForward: pageResultsTable.carriedForward,
+};
+
 // ── WAF token store ───────────────────────────────────────────────────────────
 // Keyed by pageId → token data. Tokens expire after 10 minutes.
 // Used by the Ampera WAF Scanner extension to authenticate local scan results.
@@ -149,7 +246,7 @@ async function tryCarryForward(
   if (!prev) return false;
 
   const prevIssues = await db
-    .select()
+    .select(accessibilityIssueFields)
     .from(accessibilityIssuesTable)
     .where(eq(accessibilityIssuesTable.pageId, prev.id));
   const selectedRuleIds =
@@ -165,7 +262,7 @@ async function tryCarryForward(
 
   const interactionStateIds = new Map<number, number>();
   const previousStates = await db
-    .select()
+    .select(pageInteractionStateFields)
     .from(pageInteractionStatesTable)
     .where(eq(pageInteractionStatesTable.pageId, prev.id));
   if (previousStates.length > 0) {
@@ -227,7 +324,7 @@ async function tryCarryForward(
   // scans produce complete QA datasets, not just accessibility issues.
   try {
     const [prevQaPage] = await db
-      .select()
+      .select(qaPageFields)
       .from(qaPagesTable)
       .where(and(eq(qaPagesTable.scanId, prev.scanId), inArray(qaPagesTable.url, variants)))
       .orderBy(sql`${qaPagesTable.id} DESC`)
@@ -244,7 +341,7 @@ async function tryCarryForward(
       }
     }
     const prevLinks = await db
-      .select()
+      .select(qaLinkFields)
       .from(qaLinksTable)
       .where(and(eq(qaLinksTable.scanId, prev.scanId), inArray(qaLinksTable.sourceUrl, variants)));
     if (prevLinks.length > 0) {
@@ -253,7 +350,7 @@ async function tryCarryForward(
       );
     }
     const prevImages = await db
-      .select()
+      .select(qaImageFields)
       .from(qaImagesTable)
       .where(and(eq(qaImagesTable.scanId, prev.scanId), inArray(qaImagesTable.sourceUrl, variants)));
     if (prevImages.length > 0) {
@@ -874,7 +971,7 @@ async function scanSinglePage(
   let pageRow: typeof pageResultsTable.$inferSelect | undefined;
   try {
     const rows = await db
-      .select()
+      .select(pageResultFields)
       .from(pageResultsTable)
       .where(
         and(eq(pageResultsTable.scanId, scanId), eq(pageResultsTable.url, url)),
@@ -1240,7 +1337,12 @@ async function scanSinglePage(
     // Update session totals (skipped during post-cycle retry; recomputed from DB after)
     if (!skipCounterUpdates) {
       const [session] = await db
-        .select()
+        .select({
+          scannedUrls: scanSessionsTable.scannedUrls,
+          failedUrls: scanSessionsTable.failedUrls,
+          totalIssues: scanSessionsTable.totalIssues,
+          criticalIssues: scanSessionsTable.criticalIssues,
+        })
         .from(scanSessionsTable)
         .where(eq(scanSessionsTable.id, scanId));
 
@@ -1315,7 +1417,7 @@ async function scanSinglePage(
         })
         .where(eq(pageResultsTable.id, pageId));
       const [session] = await db
-        .select()
+        .select({ failedUrls: scanSessionsTable.failedUrls })
         .from(scanSessionsTable)
         .where(eq(scanSessionsTable.id, scanId));
       if (session) {

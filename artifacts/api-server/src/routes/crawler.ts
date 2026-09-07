@@ -31,6 +31,40 @@ import { parseUrlsFromCsv } from "../lib/sitemap";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+const crawlerSessionColumns = {
+  id: crawlerSessionsTable.id, userId: crawlerSessionsTable.userId, siteId: crawlerSessionsTable.siteId, name: crawlerSessionsTable.name,
+  seedUrl: crawlerSessionsTable.seedUrl, status: crawlerSessionsTable.status, lifecycleStatus: crawlerSessionsTable.lifecycleStatus,
+  config: crawlerSessionsTable.config, scanSessionId: crawlerSessionsTable.scanSessionId, scheduledStartAt: crawlerSessionsTable.scheduledStartAt,
+  totalDiscovered: crawlerSessionsTable.totalDiscovered, totalScanned: crawlerSessionsTable.totalScanned, totalFailed: crawlerSessionsTable.totalFailed,
+  totalSkipped: crawlerSessionsTable.totalSkipped, totalIssues: crawlerSessionsTable.totalIssues, totalRules: crawlerSessionsTable.totalRules,
+  brokenLinksCount: crawlerSessionsTable.brokenLinksCount, createdAt: crawlerSessionsTable.createdAt, startedAt: crawlerSessionsTable.startedAt,
+  discoveredAt: crawlerSessionsTable.discoveredAt, scanStartedAt: crawlerSessionsTable.scanStartedAt, completedAt: crawlerSessionsTable.completedAt,
+  pausedAt: crawlerSessionsTable.pausedAt, errorMessage: crawlerSessionsTable.errorMessage,
+};
+const siteColumns = {
+  id: sitesTable.id, userId: sitesTable.userId, name: sitesTable.name, baseUrl: sitesTable.baseUrl, description: sitesTable.description,
+  defaultScope: sitesTable.defaultScope, sitemapUrl: sitesTable.sitemapUrl, crawlType: sitesTable.crawlType, maxPages: sitesTable.maxPages,
+  maxDepth: sitesTable.maxDepth, respectRobotsTxt: sitesTable.respectRobotsTxt, assetMode: sitesTable.assetMode,
+  scheduleEnabled: sitesTable.scheduleEnabled, scheduleIntervalDays: sitesTable.scheduleIntervalDays, timezone: sitesTable.timezone,
+  nextCrawlAt: sitesTable.nextCrawlAt, lastCompletedAt: sitesTable.lastCompletedAt, lifecycleStatus: sitesTable.lifecycleStatus,
+  targetScore: sitesTable.targetScore, createdAt: sitesTable.createdAt, updatedAt: sitesTable.updatedAt,
+};
+const getSiteContentRuleColumns = () => ({
+  id: siteContentRulesTable.id, siteId: siteContentRulesTable.siteId, ruleType: siteContentRulesTable.ruleType,
+  pattern: siteContentRulesTable.pattern, patternType: siteContentRulesTable.patternType, note: siteContentRulesTable.note,
+  enabled: siteContentRulesTable.enabled, createdBy: siteContentRulesTable.createdBy, createdAt: siteContentRulesTable.createdAt, updatedAt: siteContentRulesTable.updatedAt,
+});
+const crawlerPageColumns = {
+  id: crawlerPagesTable.id, sessionId: crawlerPagesTable.sessionId, url: crawlerPagesTable.url, urlHash: crawlerPagesTable.urlHash,
+  status: crawlerPagesTable.status, depth: crawlerPagesTable.depth, discoveredFrom: crawlerPagesTable.discoveredFrom,
+  contentHash: crawlerPagesTable.contentHash, httpStatus: crawlerPagesTable.httpStatus, issueCount: crawlerPagesTable.issueCount,
+  ruleCount: crawlerPagesTable.ruleCount, pageType: crawlerPagesTable.pageType, errorMessage: crawlerPagesTable.errorMessage,
+  scannedAt: crawlerPagesTable.scannedAt, capturedHtml: crawlerPagesTable.capturedHtml,
+};
+const brokenLinkColumns = {
+  id: brokenLinksTable.id, sessionId: brokenLinksTable.sessionId, sourceUrl: brokenLinksTable.sourceUrl, brokenUrl: brokenLinksTable.brokenUrl,
+  httpStatus: brokenLinksTable.httpStatus, errorType: brokenLinksTable.errorType, anchorText: brokenLinksTable.anchorText, checkedAt: brokenLinksTable.checkedAt,
+};
 
 const DEFAULT_CRAWLER_PERMISSIONS = {
   canCreateCrawl: true,
@@ -132,7 +166,7 @@ async function resolveSession(req: any, res: Response, sessionId: number) {
     return null;
   }
 
-  const [session] = await db.select().from(crawlerSessionsTable)
+  const [session] = await db.select(crawlerSessionColumns).from(crawlerSessionsTable)
     .where(eq(crawlerSessionsTable.id, sessionId)).limit(1);
 
   if (!session) {
@@ -264,7 +298,7 @@ router.post("/crawler/sessions", requireAuth, async (req: Request, res: Response
   let sitePolicy: typeof sitesTable.$inferSelect | undefined;
   if (data.siteId != null) {
     const [siteRow] = await db
-      .select()
+      .select(siteColumns)
       .from(sitesTable)
       .where(eq(sitesTable.id, data.siteId))
       .limit(1);
@@ -342,7 +376,7 @@ router.post("/crawler/sessions", requireAuth, async (req: Request, res: Response
     selectedRules: data.selectedRules,
     assetMode: sitePolicy?.assetMode,
     contentRules: sitePolicy
-      ? await db.select().from(siteContentRulesTable)
+      ? await db.select(getSiteContentRuleColumns()).from(siteContentRulesTable)
         .where(and(eq(siteContentRulesTable.siteId, sitePolicy.id), eq(siteContentRulesTable.enabled, true)))
         .orderBy(siteContentRulesTable.id)
       : undefined,
@@ -405,7 +439,32 @@ router.get("/crawler/sessions", requireAuth, async (req: Request, res: Response)
   };
 
   const where = buildWhere(!adminUser);
-  const sessions = await db.select().from(crawlerSessionsTable)
+  const sessions = await db.select({
+    id: crawlerSessionsTable.id,
+    userId: crawlerSessionsTable.userId,
+    siteId: crawlerSessionsTable.siteId,
+    name: crawlerSessionsTable.name,
+    seedUrl: crawlerSessionsTable.seedUrl,
+    status: crawlerSessionsTable.status,
+    lifecycleStatus: crawlerSessionsTable.lifecycleStatus,
+    config: crawlerSessionsTable.config,
+    scanSessionId: crawlerSessionsTable.scanSessionId,
+    scheduledStartAt: crawlerSessionsTable.scheduledStartAt,
+    totalDiscovered: crawlerSessionsTable.totalDiscovered,
+    totalScanned: crawlerSessionsTable.totalScanned,
+    totalFailed: crawlerSessionsTable.totalFailed,
+    totalSkipped: crawlerSessionsTable.totalSkipped,
+    totalIssues: crawlerSessionsTable.totalIssues,
+    totalRules: crawlerSessionsTable.totalRules,
+    brokenLinksCount: crawlerSessionsTable.brokenLinksCount,
+    createdAt: crawlerSessionsTable.createdAt,
+    startedAt: crawlerSessionsTable.startedAt,
+    discoveredAt: crawlerSessionsTable.discoveredAt,
+    scanStartedAt: crawlerSessionsTable.scanStartedAt,
+    completedAt: crawlerSessionsTable.completedAt,
+    pausedAt: crawlerSessionsTable.pausedAt,
+    errorMessage: crawlerSessionsTable.errorMessage,
+  }).from(crawlerSessionsTable)
     .where(where)
     .orderBy(desc(crawlerSessionsTable.createdAt))
     .limit(limit).offset(offset);
@@ -578,7 +637,7 @@ router.get("/crawler/sessions/:id/pages", requireAuth, async (req: Request, res:
   const whereClause = conditions.length === 1 ? conditions[0] : and(...conditions as [any, any, ...any[]]);
 
   const [pages, [{ total }]] = await Promise.all([
-    db.select().from(crawlerPagesTable).where(whereClause)
+    db.select(crawlerPageColumns).from(crawlerPagesTable).where(whereClause)
       .orderBy(asc(crawlerPagesTable.id)).limit(limit).offset(offset),
     db.select({ total: sql<number>`count(*)::int` }).from(crawlerPagesTable).where(whereClause),
   ]);
@@ -675,7 +734,7 @@ router.get("/crawler/sessions/:id/broken-links", requireAuth, async (req: Reques
   const offset = (page - 1) * limit;
 
   const [links, [{ total }]] = await Promise.all([
-    db.select().from(brokenLinksTable)
+    db.select(brokenLinkColumns).from(brokenLinksTable)
       .where(and(
         eq(brokenLinksTable.sessionId, sessionId),
         sql`((${brokenLinksTable.httpStatus} >= 400 AND ${brokenLinksTable.httpStatus} <> 403) OR ${brokenLinksTable.httpStatus} IS NULL)`,
@@ -764,7 +823,7 @@ router.get("/crawler/sessions/:id/progress", requireAuth, async (req: Request, r
   const ACTIVE_STATUSES = ["running", "pending", "discovering", "scanning"];
 
   const poll = async () => {
-    const [session] = await db.select().from(crawlerSessionsTable)
+    const [session] = await db.select(crawlerSessionColumns).from(crawlerSessionsTable)
       .where(eq(crawlerSessionsTable.id, sessionId)).limit(1);
 
     if (!session) { send({ error: "Session not found" }); return false; }

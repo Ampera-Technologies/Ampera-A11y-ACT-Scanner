@@ -10,6 +10,36 @@ import { sendInviteEmail } from "../lib/email";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
+const userColumns = {
+  id: usersTable.id, email: usersTable.email, username: usersTable.username, passwordHash: usersTable.passwordHash,
+  fullName: usersTable.fullName, profileImageUrl: usersTable.profileImageUrl, profileImageContentType: usersTable.profileImageContentType,
+  role: usersTable.role, isActive: usersTable.isActive, mustResetPassword: usersTable.mustResetPassword,
+  inviteToken: usersTable.inviteToken, inviteTokenExpiresAt: usersTable.inviteTokenExpiresAt, createdAt: usersTable.createdAt, updatedAt: usersTable.updatedAt,
+};
+const groupColumns = {
+  id: userGroupsTable.id, name: userGroupsTable.name, description: userGroupsTable.description, roleLabel: userGroupsTable.roleLabel,
+  canScan: userGroupsTable.canScan, canExport: userGroupsTable.canExport, canViewAllScans: userGroupsTable.canViewAllScans,
+  canEditScan: userGroupsTable.canEditScan, canDeleteScan: userGroupsTable.canDeleteScan, canManageScan: userGroupsTable.canManageScan,
+  canCreateProject: userGroupsTable.canCreateProject, canDeleteProject: userGroupsTable.canDeleteProject, canDisableJs: userGroupsTable.canDisableJs,
+  canSmartAnalysis: userGroupsTable.canSmartAnalysis, canSwitchSite: userGroupsTable.canSwitchSite, canCreateCrawl: userGroupsTable.canCreateCrawl,
+  canDeleteCrawl: userGroupsTable.canDeleteCrawl, canViewCrawlHistory: userGroupsTable.canViewCrawlHistory, canViewQualityAssurance: userGroupsTable.canViewQualityAssurance,
+  canViewSiteAccessibilityDashboard: userGroupsTable.canViewSiteAccessibilityDashboard, canViewHtmlReplay: userGroupsTable.canViewHtmlReplay,
+  canManageSites: userGroupsTable.canManageSites, canManageSiteTargetScore: userGroupsTable.canManageSiteTargetScore,
+  canViewIssues: userGroupsTable.canViewIssues, canCreateIssue: userGroupsTable.canCreateIssue, canEditIssue: userGroupsTable.canEditIssue,
+  canCommentIssue: userGroupsTable.canCommentIssue, canManageIssues: userGroupsTable.canManageIssues, createdAt: userGroupsTable.createdAt,
+};
+const permissionColumns = {
+  userId: userPermissionsTable.userId, canScan: userPermissionsTable.canScan, canExport: userPermissionsTable.canExport,
+  canViewAllScans: userPermissionsTable.canViewAllScans, canEditScan: userPermissionsTable.canEditScan, canDeleteScan: userPermissionsTable.canDeleteScan,
+  canManageScan: userPermissionsTable.canManageScan, canCreateProject: userPermissionsTable.canCreateProject, canDeleteProject: userPermissionsTable.canDeleteProject,
+  canDisableJs: userPermissionsTable.canDisableJs, canSmartAnalysis: userPermissionsTable.canSmartAnalysis, canSwitchSite: userPermissionsTable.canSwitchSite,
+  canCreateCrawl: userPermissionsTable.canCreateCrawl, canDeleteCrawl: userPermissionsTable.canDeleteCrawl, canViewCrawlHistory: userPermissionsTable.canViewCrawlHistory,
+  canViewQualityAssurance: userPermissionsTable.canViewQualityAssurance, canViewSiteAccessibilityDashboard: userPermissionsTable.canViewSiteAccessibilityDashboard,
+  canViewHtmlReplay: userPermissionsTable.canViewHtmlReplay, canManageSites: userPermissionsTable.canManageSites, canManageSiteTargetScore: userPermissionsTable.canManageSiteTargetScore,
+  canViewIssues: userPermissionsTable.canViewIssues, canCreateIssue: userPermissionsTable.canCreateIssue, canEditIssue: userPermissionsTable.canEditIssue,
+  canCommentIssue: userPermissionsTable.canCommentIssue, canManageIssues: userPermissionsTable.canManageIssues, allowedRules: userPermissionsTable.allowedRules,
+  updatedAt: userPermissionsTable.updatedAt, updatedBy: userPermissionsTable.updatedBy,
+};
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 
@@ -63,7 +93,7 @@ router.get("/admin/users/:id", requireAdmin, async (req, res): Promise<void> => 
   const id = parseInt(req.params["id"] as string, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid user ID" }); return; }
 
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, id));
+  const [user] = await db.select(userColumns).from(usersTable).where(eq(usersTable.id, id));
   if (!user) { res.status(404).json({ error: "User not found" }); return; }
 
   res.json({ ...user, passwordHash: undefined, createdAt: user.createdAt.toISOString(), updatedAt: user.updatedAt.toISOString() });
@@ -202,7 +232,7 @@ router.post("/admin/users/:id/reset-invite", requireAdmin, async (req, res): Pro
   const id = parseInt(req.params["id"] as string, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid user ID" }); return; }
 
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, id));
+  const [user] = await db.select(userColumns).from(usersTable).where(eq(usersTable.id, id));
   if (!user) { res.status(404).json({ error: "User not found" }); return; }
 
   const tempPassword = crypto.randomBytes(6).toString("base64url");
@@ -230,7 +260,7 @@ router.post("/admin/users/:id/reset-invite", requireAdmin, async (req, res): Pro
 // ── Groups ────────────────────────────────────────────────────────────────────
 
 router.get("/admin/groups", requireAdmin, async (_req, res): Promise<void> => {
-  const groups = await db.select().from(userGroupsTable).orderBy(asc(userGroupsTable.name));
+  const groups = await db.select(groupColumns).from(userGroupsTable).orderBy(asc(userGroupsTable.name));
 
   const groupIds = groups.map((g) => g.id);
   let memberships: { groupId: number; userId: number; fullName: string; username: string }[] = [];
@@ -264,7 +294,7 @@ router.post("/admin/groups", requireAdmin, async (req, res): Promise<void> => {
     canManageScan, canCreateProject, canDeleteProject, canDisableJs,
     canSmartAnalysis, canSwitchSite, canCreateCrawl, canDeleteCrawl,
     canViewCrawlHistory, canViewQualityAssurance,
-    canViewSiteAccessibilityDashboard, canManageSites, canManageSiteTargetScore,
+    canViewSiteAccessibilityDashboard, canViewHtmlReplay, canManageSites, canManageSiteTargetScore,
     canViewIssues, canCreateIssue, canEditIssue, canCommentIssue, canManageIssues,
   } = req.body ?? {};
   if (!name) { res.status(400).json({ error: "Group name is required" }); return; }
@@ -290,6 +320,7 @@ router.post("/admin/groups", requireAdmin, async (req, res): Promise<void> => {
       canViewCrawlHistory: typeof canViewCrawlHistory === "boolean" ? canViewCrawlHistory : false,
       canViewQualityAssurance: typeof canViewQualityAssurance === "boolean" ? canViewQualityAssurance : false,
       canViewSiteAccessibilityDashboard: typeof canViewSiteAccessibilityDashboard === "boolean" ? canViewSiteAccessibilityDashboard : false,
+      canViewHtmlReplay: typeof canViewHtmlReplay === "boolean" ? canViewHtmlReplay : false,
       canManageSites: typeof canManageSites === "boolean" ? canManageSites : false,
       canManageSiteTargetScore: typeof canManageSiteTargetScore === "boolean" ? canManageSiteTargetScore : false,
       canViewIssues: typeof canViewIssues === "boolean" ? canViewIssues : false,
@@ -315,7 +346,7 @@ router.put("/admin/groups/:id", requireAdmin, async (req, res): Promise<void> =>
     canManageScan, canCreateProject, canDeleteProject, canDisableJs,
     canSmartAnalysis, canSwitchSite, canCreateCrawl, canDeleteCrawl,
     canViewCrawlHistory, canViewQualityAssurance,
-    canViewSiteAccessibilityDashboard, canManageSites, canManageSiteTargetScore,
+    canViewSiteAccessibilityDashboard, canViewHtmlReplay, canManageSites, canManageSiteTargetScore,
     canViewIssues, canCreateIssue, canEditIssue, canCommentIssue, canManageIssues,
   } = req.body ?? {};
   const updates: Partial<typeof userGroupsTable.$inferInsert> = {};
@@ -327,7 +358,7 @@ router.put("/admin/groups/:id", requireAdmin, async (req, res): Promise<void> =>
     canManageScan, canCreateProject, canDeleteProject, canDisableJs,
     canSmartAnalysis, canSwitchSite, canCreateCrawl, canDeleteCrawl,
     canViewCrawlHistory, canViewQualityAssurance,
-    canViewSiteAccessibilityDashboard, canManageSites, canManageSiteTargetScore,
+    canViewSiteAccessibilityDashboard, canViewHtmlReplay, canManageSites, canManageSiteTargetScore,
     canViewIssues, canCreateIssue, canEditIssue, canCommentIssue, canManageIssues,
   } as const;
   for (const [key, value] of Object.entries(permissionFields)) {
@@ -386,7 +417,7 @@ router.get("/admin/permissions", requireSuperAdmin, async (_req, res): Promise<v
     .from(usersTable)
     .orderBy(asc(usersTable.fullName));
 
-  const perms = await db.select().from(userPermissionsTable);
+  const perms = await db.select(permissionColumns).from(userPermissionsTable);
   const permMap = perms.reduce<Record<number, typeof perms[0]>>((acc, p) => {
     acc[p.userId] = p;
     return acc;
@@ -412,6 +443,7 @@ router.get("/admin/permissions", requireSuperAdmin, async (_req, res): Promise<v
       canViewCrawlHistory: true,
       canViewQualityAssurance: true,
       canViewSiteAccessibilityDashboard: true,
+      canViewHtmlReplay: false,
       canManageSites: false,
       canManageSiteTargetScore: false,
       canViewIssues: true,
@@ -434,7 +466,7 @@ router.put("/admin/permissions/:userId", requireSuperAdmin, async (req, res): Pr
     canManageScan, canCreateProject, canDeleteProject, canDisableJs,
     canSmartAnalysis, canSwitchSite, canCreateCrawl, canDeleteCrawl,
     canViewCrawlHistory, canViewQualityAssurance,
-    canViewSiteAccessibilityDashboard, canManageSites, canManageSiteTargetScore,
+    canViewSiteAccessibilityDashboard, canViewHtmlReplay, canManageSites, canManageSiteTargetScore,
     canViewIssues, canCreateIssue, canEditIssue, canCommentIssue, canManageIssues, allowedRules,
   } = req.body ?? {};
   const updatedBy = req.session!.user!.id;
@@ -459,6 +491,7 @@ router.put("/admin/permissions/:userId", requireSuperAdmin, async (req, res): Pr
     canViewCrawlHistory: bool(canViewCrawlHistory, true),
     canViewQualityAssurance: bool(canViewQualityAssurance, true),
     canViewSiteAccessibilityDashboard: bool(canViewSiteAccessibilityDashboard, true),
+    canViewHtmlReplay: bool(canViewHtmlReplay, false),
     canManageSites: bool(canManageSites, false),
     canManageSiteTargetScore: bool(canManageSiteTargetScore, false),
     canViewIssues: bool(canViewIssues, true),
@@ -493,6 +526,7 @@ router.put("/admin/permissions/:userId", requireSuperAdmin, async (req, res): Pr
         canViewCrawlHistory: values.canViewCrawlHistory,
         canViewQualityAssurance: values.canViewQualityAssurance,
         canViewSiteAccessibilityDashboard: values.canViewSiteAccessibilityDashboard,
+        canViewHtmlReplay: values.canViewHtmlReplay,
         canManageSites: values.canManageSites,
         canManageSiteTargetScore: values.canManageSiteTargetScore,
         canViewIssues: values.canViewIssues,
@@ -525,7 +559,7 @@ const LOGO_KEYS = [
 // GET /api/logo — public, no auth required; returns current logo settings for all users
 router.get("/logo", async (_req, res): Promise<void> => {
   try {
-    const rows = await db.select().from(appSettingsTable)
+    const rows = await db.select({ key: appSettingsTable.key, value: appSettingsTable.value }).from(appSettingsTable)
       .where(inArray(appSettingsTable.key, [...LOGO_KEYS]));
     const map: Record<string, string> = {};
     for (const row of rows) {
@@ -589,7 +623,7 @@ const ALL_SETTINGS_KEYS = [...SMTP_KEYS, ...AI_KEYS, ...SCAN_KEYS] as const;
 
 // GET /admin/settings — return current SMTP + AI settings (super_admin only)
 router.get("/admin/settings", requireSuperAdmin, async (req, res): Promise<void> => {
-  const rows = await db.select().from(appSettingsTable).where(inArray(appSettingsTable.key, [...ALL_SETTINGS_KEYS]));
+  const rows = await db.select({ key: appSettingsTable.key, value: appSettingsTable.value }).from(appSettingsTable).where(inArray(appSettingsTable.key, [...ALL_SETTINGS_KEYS]));
   const map: Record<string, string> = {};
   for (const row of rows) {
     if (row.value !== null && row.value !== undefined) map[row.key] = row.value;
