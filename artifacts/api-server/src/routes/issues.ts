@@ -253,7 +253,10 @@ router.get("/issues", requireAuth, async (req, res) => {
     siteName: sitesTable.name,
     projectName: projectsTable.name,
   }).from(appIssuesTable)
-    .innerJoin(usersTable, eq(usersTable.id, appIssuesTable.reporterId))
+    // Azure migrations can retain issues after their original reporter record
+    // was removed or remapped. Those issues are still workspace records and
+    // must remain visible to users with canViewIssues.
+    .leftJoin(usersTable, eq(usersTable.id, appIssuesTable.reporterId))
     .leftJoin(sitesTable, eq(sitesTable.id, appIssuesTable.siteId))
     .leftJoin(projectsTable, eq(projectsTable.id, appIssuesTable.projectId))
     .where(and(...conditions)).orderBy(desc(appIssuesTable.updatedAt));

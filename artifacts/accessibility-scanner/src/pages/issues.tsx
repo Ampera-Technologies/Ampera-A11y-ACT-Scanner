@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { Ban, CheckCheck, CheckCircle2, CircleDot, Eye, GripVertical, Layers, List, Loader2, Lock, PanelRight, PauseCircle, Plus, Search } from "lucide-react";
+import { AlertCircle, Ban, CheckCheck, CheckCircle2, CircleDot, Eye, GripVertical, Layers, List, Loader2, Lock, PanelRight, PauseCircle, Plus, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -27,11 +27,23 @@ const PRIORITY_RANK: Record<string, number> = {
 
 export default function IssuesPage() {
   const [location, navigate] = useLocation();
-  const { data: issueData, isLoading: issuesLoading } = useIssues();
-  const { data: peopleData, isLoading: peopleLoading } = usePeople();
+  const { user } = useAuth();
+  const {
+    data: issueData,
+    error: issuesError,
+    isError: issuesFailed,
+    isLoading: issuesLoading,
+    isFetching: issuesFetching,
+    refetch: refetchIssues,
+  } = useIssues();
+  const shouldLoadPeople = Boolean(
+    user?.permissions?.canCreateIssue ||
+      user?.permissions?.canEditIssue ||
+      user?.permissions?.canCommentIssue,
+  );
+  const { data: peopleData } = usePeople(shouldLoadPeople);
   const createIssue = useCreateIssue();
   const { toast } = useToast();
-  const { user } = useAuth();
 
   const [view, setView] = useState<"list" | "details">("details");
   const [search, setSearch] = useState("");
@@ -234,8 +246,42 @@ export default function IssuesPage() {
     }
   };
 
-  if (issuesLoading || peopleLoading) {
+  if (issuesLoading) {
     return <div className="flex justify-center p-14"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
+  }
+
+  if (issuesFailed) {
+    return (
+      <div className="flex h-[calc(100dvh-4rem)] items-center justify-center bg-muted/10 p-6">
+        <Card className="w-full max-w-lg">
+          <CardContent className="flex flex-col items-center gap-4 p-8 text-center">
+            <div className="rounded-full bg-destructive/10 p-3 text-destructive">
+              <AlertCircle className="h-6 w-6" aria-hidden="true" />
+            </div>
+            <div>
+              <h1 className="text-lg font-semibold">Issues could not be loaded</h1>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {issuesError instanceof Error
+                  ? issuesError.message
+                  : "The Issue Management service is unavailable. Please try again."}
+              </p>
+            </div>
+            <Button
+              type="button"
+              onClick={() => void refetchIssues()}
+              disabled={issuesFetching}
+            >
+              {issuesFetching ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
+              )}
+              Try again
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (
@@ -261,7 +307,7 @@ export default function IssuesPage() {
       <div className="flex-none grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-8">
         <button
           type="button"
-          className="rounded-xl text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 cursor-pointer"
+          className="rounded-xl text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           aria-label={`Show all ${metrics.total} issues`}
           aria-pressed={statusFilter === "all"}
           onClick={() => setStatusFilter("all")}

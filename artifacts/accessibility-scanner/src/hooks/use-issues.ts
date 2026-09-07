@@ -74,6 +74,7 @@ export function useIssues() {
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
+    retry: 1,
   });
 }
 
@@ -90,15 +91,17 @@ export function useIssue(id: number | null) {
   });
 }
 
-export function usePeople() {
+export function usePeople(enabled = true) {
   return useQuery({
     queryKey: ["issues-people"],
     queryFn: () => api<Person[]>("/api/issues/people"),
+    enabled,
     staleTime: Infinity,
     gcTime: Infinity,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
+    retry: 1,
   });
 }
 
