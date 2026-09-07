@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { useIssue, useUpdateIssue, useAddComment, useUpdateComment, useArchiveIssue, useAddIssueLink, useRemoveIssueLink } from "../../hooks/use-issues";
+import { useIssue, useUpdateIssue, useAddComment, useUpdateComment, useArchiveIssue, useRestoreIssue, useAddIssueLink, useRemoveIssueLink } from "../../hooks/use-issues";
 import { getStatusTransitions, STATUS_LABELS, STATUS_COLORS, TYPE_COLORS, Person, Issue, ISSUE_LINK_LABELS, ISSUE_LINK_TYPES, IssueLinkType } from "../../lib/issue-types";
 import { RichTextEditor } from "./rich-text-editor";
 import { AttachmentControl, AttachmentPreview } from "./attachment-control";
@@ -30,6 +30,7 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
   const addComment = useAddComment(id);
   const updateComment = useUpdateComment(id);
   const archiveIssue = useArchiveIssue();
+  const restoreIssue = useRestoreIssue();
   const addIssueLink = useAddIssueLink(id);
   const removeIssueLink = useRemoveIssueLink(id);
   const { toast } = useToast();
@@ -159,6 +160,13 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
     });
   };
 
+  const handleRestore = () => {
+    restoreIssue.mutate(id, {
+      onSuccess: () => toast({ title: "Issue restored", description: `${issue.issueKey} is visible in the active issue list again.` }),
+      onError: (error) => toast({ title: "Couldn't restore issue", description: error.message, variant: "destructive" }),
+    });
+  };
+
   const handleAddLink = () => {
     const targetIssueId = Number(linkTargetId);
     if (!targetIssueId) return;
@@ -250,7 +258,19 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
                 </Button>
               </>
             )}
-            {canManage && (
+            {canManage && issue.archived && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRestore}
+                className="h-8"
+                disabled={restoreIssue.isPending}
+              >
+                {restoreIssue.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1.5 h-3.5 w-3.5" />}
+                Restore issue
+              </Button>
+            )}
+            {canManage && !issue.archived && (
               <Button variant="ghost" size="sm" onClick={handleArchive} className="h-8 text-muted-foreground hover:text-destructive">
                 <Archive className="mr-1.5 h-3.5 w-3.5" />
                 Archive

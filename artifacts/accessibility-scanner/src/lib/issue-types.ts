@@ -203,6 +203,7 @@ export interface Issue {
   sprint?: string | null;
   customFields?: Record<string, any>;
   attachments?: IssueAttachment[];
+  archived: boolean;
 
   createdAt: string;
   updatedAt: string;

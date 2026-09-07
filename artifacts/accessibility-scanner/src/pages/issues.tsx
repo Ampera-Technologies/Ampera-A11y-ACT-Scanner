@@ -28,6 +28,7 @@ const PRIORITY_RANK: Record<string, number> = {
 export default function IssuesPage() {
   const [location, navigate] = useLocation();
   const { user } = useAuth();
+  const canManage = user?.permissions?.canManageIssues ?? false;
   const {
     data: issueData,
     error: issuesError,
@@ -35,7 +36,7 @@ export default function IssuesPage() {
     isLoading: issuesLoading,
     isFetching: issuesFetching,
     refetch: refetchIssues,
-  } = useIssues();
+  } = useIssues(canManage);
   const shouldLoadPeople = Boolean(
     user?.permissions?.canCreateIssue ||
       user?.permissions?.canEditIssue ||
@@ -64,7 +65,6 @@ export default function IssuesPage() {
   const canCreate = user?.permissions?.canCreateIssue ?? false;
   const canEdit = user?.permissions?.canEditIssue ?? false;
   const canComment = user?.permissions?.canCommentIssue ?? false;
-  const canManage = user?.permissions?.canManageIssues ?? false;
 
   useEffect(() => {
     const params = new URLSearchParams(location.split("?")[1] ?? "");
@@ -138,16 +138,19 @@ export default function IssuesPage() {
     { key: "differ", label: "Differed", helper: "", style: "text-cyan-600 dark:text-cyan-400", Icon: PauseCircle },
   ];
 
-  const filtered = useMemo(() => issues.filter((issue) =>
-    (!search || [issue.issueKey, issue.title, issue.description, issue.siteName ?? ""].join(" ").toLowerCase().includes(search.toLowerCase())) &&
-    (typeFilter === "all" || issue.type === typeFilter) && 
-    (
+  const filtered = useMemo(() => issues.filter((issue) => {
+    const archiveMatches = statusFilter === "archived" ? issue.archived : !issue.archived;
+    const statusMatches =
       statusFilter === "all" ||
+      statusFilter === "archived" ||
       issue.status === statusFilter ||
       (statusFilter === "todo" && issue.status === "reopen") ||
-      (statusFilter === "closed" && issue.status === "complete")
-    )
-  ), [issues, search, typeFilter, statusFilter]);
+      (statusFilter === "closed" && issue.status === "complete");
+    return archiveMatches &&
+      (!search || [issue.issueKey, issue.title, issue.description, issue.siteName ?? ""].join(" ").toLowerCase().includes(search.toLowerCase())) &&
+      (typeFilter === "all" || issue.type === typeFilter) &&
+      statusMatches;
+  }), [issues, search, typeFilter, statusFilter]);
 
   const sortedIssues = useMemo(() => {
     const next = [...filtered];
@@ -162,7 +165,7 @@ export default function IssuesPage() {
     return next;
   }, [filtered, sort]);
 
-  const allStatuses = Object.keys(STATUS_LABELS);
+  const allStatuses = canManage ? [...Object.keys(STATUS_LABELS), "archived"] : Object.keys(STATUS_LABELS);
 
   const handleCreateSave = async (attachments: File[]) => {
     setCreateSaving(true);
@@ -387,10 +390,12 @@ export default function IssuesPage() {
             <SelectTrigger aria-label="Filter by issue status" className="w-full md:w-[160px] font-medium bg-muted/50 border-transparent">
               <SelectValue placeholder="Status" />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent className="max-h-72 overflow-y-auto">
               <SelectItem value="all">All Statuses</SelectItem>
               {allStatuses.map((value) => (
-                <SelectItem key={value} value={value} className="font-medium">{STATUS_LABELS[value] || value}</SelectItem>
+                <SelectItem key={value} value={value} className="font-medium">
+                  {value === "archived" ? "Archived" : STATUS_LABELS[value] || value}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>

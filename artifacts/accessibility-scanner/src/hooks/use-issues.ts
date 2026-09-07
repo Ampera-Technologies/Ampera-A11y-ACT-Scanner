@@ -61,10 +61,12 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function useIssues() {
+export function useIssues(includeArchived = false) {
   return useQuery({
-    queryKey: ["issues"],
-    queryFn: () => api<{ issues: Issue[]; metrics: IssueMetrics }>("/api/issues"),
+    queryKey: ["issues", { includeArchived }],
+    queryFn: () => api<{ issues: Issue[]; metrics: IssueMetrics }>(
+      `/api/issues${includeArchived ? "?includeArchived=true" : ""}`,
+    ),
     // Issue Management is user-driven rather than a live dashboard. Keep the
     // current list stable while the user works and let mutations invalidate it
     // when an explicit change has been made. A full browser refresh still
@@ -170,6 +172,18 @@ export function useArchiveIssue() {
     mutationFn: (id: number) =>
       api<any>(`/api/issues/${id}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["issues"] }),
+  });
+}
+
+export function useRestoreIssue() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) =>
+      api<Issue>(`/api/issues/${id}/restore`, { method: "POST" }),
+    onSuccess: (_issue, id) => {
+      qc.invalidateQueries({ queryKey: ["issues"] });
+      qc.invalidateQueries({ queryKey: ["issues", id] });
+    },
   });
 }
 

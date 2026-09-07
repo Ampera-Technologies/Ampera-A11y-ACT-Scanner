@@ -270,7 +270,10 @@ router.get("/issues", requireAuth, async (req, res) => {
   if (!(await requireIssuePermission(req, res, "canViewIssues"))) return;
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const siteId = Number(req.query.siteId);
-  const conditions = [await visibleWhere(req), eq(appIssuesTable.archived, false)];
+  const includeArchived = req.query.includeArchived === "true";
+  if (includeArchived && req.session!.user!.role !== "super_admin" && !(await requireIssuePermission(req, res, "canManageIssues"))) return;
+  const conditions = [await visibleWhere(req)];
+  if (!includeArchived) conditions.push(eq(appIssuesTable.archived, false));
   if (q) conditions.push(or(ilike(appIssuesTable.title, `%${q}%`), ilike(appIssuesTable.issueKey, `%${q}%`), ilike(appIssuesTable.description, `%${q}%`))!);
   if (statuses.includes(String(req.query.status))) conditions.push(eq(appIssuesTable.status, String(req.query.status)));
   if (isIssueType(String(req.query.type))) conditions.push(eq(appIssuesTable.type, String(req.query.type)));
@@ -318,22 +321,23 @@ router.get("/issues", requireAuth, async (req, res) => {
     .leftJoin(sitesTable, eq(sitesTable.id, appIssuesTable.siteId))
     .leftJoin(projectsTable, eq(projectsTable.id, appIssuesTable.projectId))
     .where(and(...conditions)).orderBy(desc(appIssuesTable.updatedAt));
+  const activeIssues = issues.filter((x) => !x.issue.archived);
   const metrics = {
-    total: issues.length,
-    open: issues.filter((x) => !["complete", "closed"].includes(x.issue.status)).length,
-    inProgress: issues.filter((x) => x.issue.status === "in_progress").length,
-    done: issues.filter((x) => ["complete", "closed"].includes(x.issue.status)).length,
-    bugs: issues.filter((x) => x.issue.type === "bug").length,
+    total: activeIssues.length,
+    open: activeIssues.filter((x) => !["complete", "closed"].includes(x.issue.status)).length,
+    inProgress: activeIssues.filter((x) => x.issue.status === "in_progress").length,
+    done: activeIssues.filter((x) => ["complete", "closed"].includes(x.issue.status)).length,
+    bugs: activeIssues.filter((x) => x.issue.type === "bug").length,
     statusCounts: Object.fromEntries(
       statuses.map((status) => [
         status,
-        issues.filter((x) => x.issue.status === status).length,
+        activeIssues.filter((x) => x.issue.status === status).length,
       ]),
     ),
     typeCounts: Object.fromEntries(
       ISSUE_TYPES.map((type) => [
         type,
-        issues.filter((x) => x.issue.type === type).length,
+        activeIssues.filter((x) => x.issue.type === type).length,
       ]),
     ),
   };
@@ -773,6 +777,25 @@ router.delete("/issues/:id", requireAuth, async (req, res) => {
   if (!issue) { res.status(404).json({ error: "Issue not found" }); return; }
   await db.update(appIssuesTable).set({ archived: true, updatedAt: new Date() }).where(eq(appIssuesTable.id, issue.id));
   res.status(204).send();
+});
+
+router.post("/issues/:id/restore", requireAuth, async (req, res) => {
+  if (req.session!.user!.role !== "super_admin" && !(await requireIssuePermission(req, res, "canManageIssues"))) return;
+  const issue = await canSeeIssue(req, Number(req.params.id));
+  if (!issue) { res.status(404).json({ error: "Issue not found" }); return; }
+  if (!issue.archived) { res.status(400).json({ error: "Issue is not archived" }); return; }
+  const updatedAt = new Date();
+  const [restored] = await db.update(appIssuesTable)
+    .set({ archived: false, updatedAt })
+    .where(eq(appIssuesTable.id, issue.id))
+    .returning();
+  await db.insert(appIssueActivityTable).values({
+    issueId: issue.id,
+    actorId: Number(req.session!.user!.id),
+    action: "restored",
+    details: {},
+  });
+  res.json(restored);
 });
 
 export default router;
