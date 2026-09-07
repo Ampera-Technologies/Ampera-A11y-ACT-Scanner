@@ -1,4 +1,4 @@
-const ALLOWED_TAGS = new Set(["p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li", "a", "code", "pre", "blockquote", "h3", "h4"]);
+const ALLOWED_TAGS = new Set(["p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li", "a", "code", "pre", "blockquote", "h3", "h4", "table", "thead", "tbody", "tfoot", "tr", "th", "td"]);
 const REMOVE_WITH_CONTENT = new Set(["script", "style", "iframe", "object", "embed", "svg", "math"]);
 
 /**

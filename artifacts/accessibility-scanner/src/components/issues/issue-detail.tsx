@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Loader2, Archive, Link2, X, Pencil, Save } from "lucide-react";
+import { Loader2, Archive, Link2, X, Pencil, RotateCcw, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -217,6 +217,22 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
             </Badge>
           </div>
           <div className="flex items-center gap-2">
+            {canEdit && ["closed", "complete"].includes(issue.status) && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleStatusChange("reopen")}
+                className="h-8"
+                disabled={updateIssue.isPending}
+              >
+                {updateIssue.isPending ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                Reopen issue
+              </Button>
+            )}
             {canEdit && !editing && (
               <Button variant="outline" size="sm" onClick={() => setEditing(true)} className="h-8">
                 <Pencil className="mr-1.5 h-3.5 w-3.5" />

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertCircle, Ban, CheckCheck, CheckCircle2, CircleDot, Eye, GripVertical, Layers, List, Loader2, Lock, PanelRight, PauseCircle, Plus, RefreshCw, Search } from "lucide-react";
+import { AlertCircle, Ban, CheckCheck, CheckCircle2, CircleDot, Eye, GripVertical, Layers, List, Loader2, Lock, PanelRight, PauseCircle, Plus, RefreshCw, RotateCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -128,9 +128,10 @@ export default function IssuesPage() {
     request: "Requests",
   };
   const statusCards = [
-    { key: "todo", label: "Open", helper: "To Do", style: "text-blue-600 dark:text-blue-400", Icon: CircleDot },
+    { key: "todo", label: "Open", helper: "To Do + Reopen", style: "text-blue-600 dark:text-blue-400", Icon: CircleDot },
     { key: "in_progress", label: "In progress", helper: "", style: "text-amber-600 dark:text-amber-400", Icon: Loader2 },
     { key: "review", label: "Review", helper: "", style: "text-violet-600 dark:text-violet-400", Icon: Eye },
+    { key: "release_to_retest", label: "Release to retest", helper: "", style: "text-orange-600 dark:text-orange-400", Icon: RotateCw },
     { key: "fixed", label: "Fixed", helper: "", style: "text-emerald-600 dark:text-emerald-400", Icon: CheckCheck },
     { key: "closed", label: "Closed", helper: "", style: "text-slate-600 dark:text-slate-300", Icon: Lock },
     { key: "blocked", label: "Blocked", helper: "", style: "text-rose-600 dark:text-rose-400", Icon: Ban },
@@ -140,7 +141,12 @@ export default function IssuesPage() {
   const filtered = useMemo(() => issues.filter((issue) =>
     (!search || [issue.issueKey, issue.title, issue.description, issue.siteName ?? ""].join(" ").toLowerCase().includes(search.toLowerCase())) &&
     (typeFilter === "all" || issue.type === typeFilter) && 
-    (statusFilter === "all" || issue.status === statusFilter || (statusFilter === "closed" && issue.status === "complete"))
+    (
+      statusFilter === "all" ||
+      issue.status === statusFilter ||
+      (statusFilter === "todo" && issue.status === "reopen") ||
+      (statusFilter === "closed" && issue.status === "complete")
+    )
   ), [issues, search, typeFilter, statusFilter]);
 
   const sortedIssues = useMemo(() => {
@@ -156,7 +162,7 @@ export default function IssuesPage() {
     return next;
   }, [filtered, sort]);
 
-  const allStatuses = Array.from(new Set(issues.map(i => i.status)));
+  const allStatuses = Object.keys(STATUS_LABELS);
 
   const handleCreateSave = async (attachments: File[]) => {
     setCreateSaving(true);
@@ -304,7 +310,7 @@ export default function IssuesPage() {
       </div>
 
       {/* Metrics Row */}
-      <div className="flex-none grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-8">
+      <div className="flex-none grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-9">
         <button
           type="button"
           className="rounded-xl text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -343,7 +349,9 @@ export default function IssuesPage() {
                 <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}</p>
                 {helper && <p className="text-[9px] font-medium leading-3 text-muted-foreground">({helper})</p>}
                 <p className={`mt-0.5 text-2xl font-black leading-none ${style}`}>
-                  {key === "closed"
+                  {key === "todo"
+                    ? (statusCounts.todo ?? 0) + (statusCounts.reopen ?? 0)
+                    : key === "closed"
                     ? (statusCounts.closed ?? 0) + (statusCounts.complete ?? 0)
                     : statusCounts[key] ?? 0}
                 </p>

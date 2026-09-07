@@ -34,7 +34,25 @@ export function runTablesFormsRules(results: ScanRawResult[], pushStat: PushStat
   document.querySelectorAll("table").forEach((table) => {
     if (!isVisible(table)) return;
     const hasHeaders = table.querySelector("th, [role='columnheader'], [role='rowheader']");
-    if (!hasHeaders) return;
+    const dataCells = Array.from(table.querySelectorAll("td, [role='cell'], [role='gridcell']"));
+    const rows = table.querySelectorAll("tr, [role='row']");
+    if (!hasHeaders) {
+      // A multi-row table made entirely from data cells has no possible
+      // programmatic header association. Report the table once rather than
+      // producing the same structural failure for every individual <td>.
+      if (dataCells.length > 0 && rows.length > 1) {
+        results.push({
+          ruleId: "ACT-R46",
+          type: "Issue",
+          impact: "serious",
+          description: "Table data cells cannot be associated with headers because the table has no <th>, columnheader, or rowheader cells",
+          element: outerHtmlSnippet(table),
+          elementContext: elementContextForAI(table),
+          selector: getSelector(table),
+        });
+      }
+      return;
+    }
     const cells = Array.from(table.querySelectorAll("td, th, [role='cell'], [role='gridcell'], [role='columnheader'], [role='rowheader']"));
     const buildGrid = () => {
       const grid: Array<Array<Element | null>> = [];

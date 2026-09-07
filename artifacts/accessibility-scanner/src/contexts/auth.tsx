@@ -25,6 +25,7 @@ export interface UserPermissions {
   canEditIssue: boolean;
   canCommentIssue: boolean;
   canManageIssues: boolean;
+  canViewHtmlReplay: boolean;
 }
 
 const DEFAULT_PERMISSIONS: UserPermissions = {
@@ -51,6 +52,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canEditIssue: true,
   canCommentIssue: true,
   canManageIssues: true,
+  canViewHtmlReplay: false,
 };
 
 export interface AuthUser {

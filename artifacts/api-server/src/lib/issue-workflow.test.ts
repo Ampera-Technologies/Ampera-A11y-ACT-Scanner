@@ -20,6 +20,7 @@ describe("issue workflow transitions", () => {
     expect(getAllowedIssueTransitions("bug", "release_to_retest")).toEqual(["reopen", "verified"]);
     expect(getAllowedIssueTransitions("bug", "verified")).toEqual(["closed"]);
     expect(terminalIssueStatus("bug")).toBe("closed");
+    expect(getAllowedIssueTransitions("bug", "closed")).toEqual(["reopen"]);
   });
 
   it("recognizes branch statuses that are valid bug transitions", () => {
@@ -41,6 +42,7 @@ describe("issue workflow transitions", () => {
     expect(canTransitionIssue("bug", "release_to_retest", "reopen")).toBe(true);
     expect(canTransitionIssue("bug", "reopen", "in_progress")).toBe(true);
     expect(canTransitionIssue("bug", "todo", "verified")).toBe(false);
+    expect(canTransitionIssue("task", "complete", "reopen")).toBe(true);
     expect(canTransitionIssue("task", "complete", "in_progress")).toBe(false);
   });
 

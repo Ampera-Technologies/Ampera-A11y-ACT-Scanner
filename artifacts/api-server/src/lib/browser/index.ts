@@ -10,7 +10,11 @@
 
 export type { ScanRawResult } from "./types";
 import type { PushStatFn } from "./types";
-import { LANGUAGE_DETECTOR_BUILD_MARKER,runDocumentLanguageRules,verifyLanguageDetectorBundle, } from "./rules/document-language";
+import {
+  LANGUAGE_DETECTOR_BUILD_MARKER,
+  runDocumentLanguageRules,
+  verifyLanguageDetectorBundle,
+} from "./rules/document-language";
 import { runNamesRules } from "./rules/names";
 import { runAriaRules } from "./rules/aria";
 import { runMediaRules } from "./rules/media";

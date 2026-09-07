@@ -1,5 +1,6 @@
 import type { ScanRawResult, PushStatFn } from "../types";
 import { ALL_ARIA_ATTRS, ARIA_PROHIBITED, GLOBAL_ARIA_ATTRS, NAMING_PROHIBITED_ROLES, REQUIRED_ARIA_ATTRS, ROLE_SUPPORTED_ATTRS, VALID_ROLES, getEffectiveAriaRole, hasNonDefaultAriaRole } from "../aria-data";
+import { ARIA_VALUE_DESCRIPTORS, ariaValueError } from "../aria-value-validator";
 import { elementContextForAI, getSelector, outerHtmlSnippet } from "../dom-helpers";
 import { isActuallyTabbable, isIncludedInAccessibilityTree, isProgrammaticallyHidden, isVisible, isVisibleRect } from "../visibility";
 
@@ -25,7 +26,10 @@ export function runAriaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: b
     }
   });
   document.querySelectorAll("button, [role='button'], a[href='#'], a[href='javascript:void(0)'], a[href='javascript:;']").forEach((el) => {
-    if (!isVisible(el)) return;
+    // R16 applies to authored controls in dormant UI states too. Passenger
+    // pickers and similar widgets commonly keep additional categories in the
+    // DOM with display:none until activated; their required state must not be
+    // skipped merely because that state is not initially rendered.
     if (el.getAttribute("aria-expanded") !== null) return;
     if (el.getAttribute("aria-haspopup")) return;
     const controls = el.getAttribute("aria-controls");
@@ -117,49 +121,32 @@ export function runAriaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: b
   // ACT-R19: Invalid value for ARIA attribute (WCAG 4.1.2)
   // ════════════════════════════════════════════════════════════════════════
   {
-    const ARIA_BOOLEAN = ["aria-atomic","aria-busy","aria-disabled","aria-modal","aria-multiline","aria-multiselectable","aria-readonly","aria-required"];
-    const ARIA_TRISTATE = ["aria-checked","aria-pressed"];
-    const ARIA_SELECTED_GRABBED = ["aria-selected","aria-grabbed"];
     document.querySelectorAll("*").forEach((el) => {
-      if (isProgrammaticallyHidden(el)) return;
-      ARIA_BOOLEAN.forEach((attr) => {
-        const val = el.getAttribute(attr);
-        if (val !== null && val !== "true" && val !== "false") {
-          results.push({ ruleId: "ACT-R19", type: "Issue", impact: "moderate", description: `${attr}="${val}" is not a valid value — use "true" or "false"`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
+      Array.from(el.attributes).forEach(({ name, value }) => {
+        const descriptor = ARIA_VALUE_DESCRIPTORS[name];
+        if (!descriptor || !value.trim()) return;
+
+        let error = ariaValueError(name, value);
+        const role = getEffectiveAriaRole(el);
+        const isRequiredReference =
+          !error &&
+          (descriptor.type === "idref" || descriptor.type === "idrefs") &&
+          (
+            (REQUIRED_ARIA_ATTRS[role] ?? []).includes(name) ||
+            (role === "scrollbar" && name === "aria-controls")
+          );
+        if (isRequiredReference) {
+          const ids = value.trim().split(/[\t\n\f\r ]+/);
+          const root = el.getRootNode();
+          const hasTarget = Array.from(
+            (root as Document | ShadowRoot).querySelectorAll?.("[id]") ?? [],
+          ).some((candidate) => ids.includes(candidate.id));
+          if (!hasTarget) error = "reference at least one existing element";
         }
+
+        if (!error) return;
+        results.push({ ruleId: "ACT-R19", type: "Issue", impact: "moderate", description: `${name}="${value}" is not a valid value — ${error}`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
       });
-      ARIA_TRISTATE.forEach((attr) => {
-        const val = el.getAttribute(attr);
-        if (val !== null && !["true","false","mixed","undefined"].includes(val)) {
-          results.push({ ruleId: "ACT-R19", type: "Issue", impact: "moderate", description: `${attr}="${val}" is not a valid tristate — use "true", "false", or "mixed"`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
-        }
-      });
-      ARIA_SELECTED_GRABBED.forEach((attr) => {
-        const val = el.getAttribute(attr);
-        if (val !== null && !["true","false","undefined"].includes(val)) {
-          results.push({ ruleId: "ACT-R19", type: "Issue", impact: "moderate", description: `${attr}="${val}" is not a valid value — use "true" or "false"`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
-        }
-      });
-      const orient = el.getAttribute("aria-orientation");
-      if (orient !== null && !["horizontal","vertical","undefined"].includes(orient)) {
-        results.push({ ruleId: "ACT-R19", type: "Issue", impact: "moderate", description: `aria-orientation="${orient}" is not valid`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
-      }
-      const sort = el.getAttribute("aria-sort");
-      if (sort !== null && !["ascending","descending","none","other"].includes(sort)) {
-        results.push({ ruleId: "ACT-R19", type: "Issue", impact: "moderate", description: `aria-sort="${sort}" is not valid`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
-      }
-      const current = el.getAttribute("aria-current");
-      if (current !== null && !["page","step","location","date","time","true","false"].includes(current)) {
-        results.push({ ruleId: "ACT-R19", type: "Issue", impact: "moderate", description: `aria-current="${current}" is not valid`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
-      }
-      const haspopup = el.getAttribute("aria-haspopup");
-      if (haspopup !== null && !["false","true","menu","listbox","tree","grid","dialog"].includes(haspopup)) {
-        results.push({ ruleId: "ACT-R19", type: "Issue", impact: "moderate", description: `aria-haspopup="${haspopup}" is not valid`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
-      }
-      const autocomplete = el.getAttribute("aria-autocomplete");
-      if (autocomplete !== null && !["inline","list","both","none"].includes(autocomplete)) {
-        results.push({ ruleId: "ACT-R19", type: "Issue", impact: "moderate", description: `aria-autocomplete="${autocomplete}" is not valid`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
-      }
     });
   }
 
@@ -191,14 +178,17 @@ export function runAriaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: b
   // ════════════════════════════════════════════════════════════════════════
   document.querySelectorAll("[role]").forEach((el) => {
     if (isProgrammaticallyHidden(el)) return;
-    const roles = (el.getAttribute("role") || "").split(/\s+/);
-    for (const role of roles) {
-      const prohibited = ARIA_PROHIBITED[role] || [];
-      for (const attr of prohibited) {
-        if (el.hasAttribute(attr)) {
-          results.push({ ruleId: "ACT-R36", type: "Issue", impact: "moderate", description: `aria attribute "${attr}" is prohibited on role="${role}"`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
-        }
-      }
+    const role = getEffectiveAriaRole(el);
+    if (!role || !(role in ROLE_SUPPORTED_ATTRS)) return;
+    const supported = new Set([
+      ...GLOBAL_ARIA_ATTRS,
+      ...ROLE_SUPPORTED_ATTRS[role],
+    ]);
+    const explicitlyProhibited = new Set(ARIA_PROHIBITED[role] || []);
+    for (const { name: attr } of Array.from(el.attributes)) {
+      if (!ALL_ARIA_ATTRS.has(attr)) continue;
+      if (!explicitlyProhibited.has(attr) && supported.has(attr)) continue;
+      results.push({ ruleId: "ACT-R36", type: "Issue", impact: "moderate", description: `ARIA attribute "${attr}" is unsupported or prohibited on role="${role}"`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
     }
   });
 
@@ -372,9 +362,14 @@ export function runAriaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: b
   ).length;
   if (anyAriaEls > 0) {
     pushStat("ACT-R18", anyAriaEls, "element");
-    pushStat("ACT-R19", anyAriaEls, "element");
     pushStat("ACT-R20", anyAriaEls, "element");
   }
+  const r19Els = Array.from(document.querySelectorAll("*")).filter((el) =>
+    Array.from(el.attributes).some(
+      ({ name, value }) => name in ARIA_VALUE_DESCRIPTORS && value.trim(),
+    ),
+  ).length;
+  if (r19Els > 0) pushStat("ACT-R19", r19Els, "element");
   const regionEls = document.querySelectorAll("[role='region'],section[aria-label],section[aria-labelledby]").length;
   if (regionEls > 0) pushStat("ACT-R40", regionEls, "element");
   const listitemEls = document.querySelectorAll("li,[role='listitem'],[role='option'],[role='menuitem'],[role='treeitem'],[role='tab'],[role='gridcell']").length;

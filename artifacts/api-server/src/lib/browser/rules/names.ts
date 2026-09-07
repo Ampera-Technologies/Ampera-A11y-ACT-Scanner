@@ -38,7 +38,7 @@ export function runNamesRules(results: ScanRawResult[], pushStat: PushStatFn): v
     void hasNamingAttribute;
     if (!isIncludedInAccessibilityTree(img)) return;
     if (!getAccessibleName(img)) {
-      results.push({ ruleId: "ACT-R2", type: "Issue", impact: "critical", description: "Image in the accessibility tree has no accessible name", element: outerHtmlSnippet(img), elementContext: elementContextForAI(img), selector: getSelector(img) });
+      results.push({ ruleId: "ACT-R2", type: "Issue", impact: "critical", description: "Image has no conforming text alternative — provide alt, aria-label, or aria-labelledby; title alone does not satisfy this rule", element: outerHtmlSnippet(img), elementContext: elementContextForAI(img), selector: getSelector(img) });
     }
   });
 

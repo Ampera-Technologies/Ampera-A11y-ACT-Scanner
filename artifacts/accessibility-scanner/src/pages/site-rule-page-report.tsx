@@ -543,6 +543,15 @@ export default function SiteRulePageReport() {
                       Deprecated
                     </Badge>
                   )}
+                  {ruleMeta?.relatedRules?.map((relatedRule) => (
+                    <Badge
+                      key={relatedRule}
+                      variant="outline"
+                      className="text-[10px] border-blue-500/50 bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300"
+                    >
+                      Related: {relatedRule}
+                    </Badge>
+                  ))}
                   {selectedIssue.wcagCriteria && (
                     <Badge variant="secondary" className="text-[10px] font-mono">WCAG {selectedIssue.wcagCriteria}</Badge>
                   )}

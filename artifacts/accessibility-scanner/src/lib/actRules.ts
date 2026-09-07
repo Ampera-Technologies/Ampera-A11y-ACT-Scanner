@@ -10,6 +10,7 @@ export type RuleDisplayMeta = {
   potentialTitle?: string;
   deprecated?: boolean;
   deprecatedReason?: string;
+  relatedRules?: string[];
   wcagCriteria?: string[];
   wcagLevel?: string[];
   eaa?: boolean;
@@ -146,6 +147,7 @@ export const ACT_RULES: Record<string, RuleDisplayMeta> = {
     issueTitle: "Audio without a transcript",
     detail:
       "Pre-recorded audio-only or video-only content must provide a text transcript or equivalent so users who cannot hear or see the media can access the same information.",
+    relatedRules: ["ACT-R38"],
   },
   "ACT-R24": {
     title: "Media alternative may be insufficient",
@@ -158,6 +160,7 @@ export const ACT_RULES: Record<string, RuleDisplayMeta> = {
     issueTitle: "Video is not audio-described",
     detail:
       "Pre-recorded video must include a synchronized audio description track, or an equivalent alternative version, for important visual information not conveyed by the existing audio.",
+    relatedRules: ["ACT-R37"],
   },
   "ACT-R26": {
     title: "Video without audio is a media alternative for text",
@@ -177,9 +180,9 @@ export const ACT_RULES: Record<string, RuleDisplayMeta> = {
       'An input[type="image"] acts as a submit button and must have an alt attribute or accessible name describing its action, not just its visual appearance.',
   },
   "ACT-R29": {
-    title: "Audio content is a media alternative for text",
+    title: "<audio> element content is media alternative for text",
     detail:
-      "Prerecorded audio must have a visible text alternative and be labeled as an audio alternative for text.",
+      'This rule checks audio is a media alternative for text on the page. It applies to every prerecorded <audio> element that is playing, or has a visible play button included in the accessibility tree. The auditory information must be available as visible text, directly or through text alternatives, and each target must have a visible label identifying it as an audio alternative for text on the page.',
   },
   "ACT-R30": {
     title: "Audio content has a text alternative",
@@ -187,9 +190,9 @@ export const ACT_RULES: Record<string, RuleDisplayMeta> = {
       "Audio content must have a text alternative. This composite check is satisfied when the audio transcript/alternative check or the audio media-alternative check passes.",
   },
   "ACT-R31": {
-    title: "Video with audio is a media alternative for text",
+    title: "<video> element content is media alternative for text",
     detail:
-      "Visible prerecorded video with audio must have a visible text alternative and be labeled as a video alternative for text.",
+      'This rule checks prerecorded video is a media alternative for text on the page. It applies to every visible prerecorded <video> element that contains audio. All information in the video must be available as visible text included in the accessibility tree, and each target must have a visible label identifying it as a video alternative for text on the page.',
   },
   "ACT-R32": {
     title: "Video visual-only content has an audio-track alternative",
@@ -210,24 +213,21 @@ export const ACT_RULES: Record<string, RuleDisplayMeta> = {
       "Deprecated in the current rule set. Video description track checks are now covered by the composite ACT-R38 rule.",
   },
   "ACT-R35": {
-    title: "Video without audio has an accessible alternative",
+    title: "<video> element visual-only content has accessible alternative",
     detail:
-      "A visible prerecorded video without audio must have an alternative, such as a text alternative, transcript, or audio-described alternative.",
+      'This rule checks that <video> elements without audio have an alternative available. It applies to every visible prerecorded <video> element that does not contain audio. Each target must pass at least one of these checks: visual-only video is a media alternative for text, visual-only video has a transcript, or visual-only video has an audio-track alternative.',
   },
   "ACT-R36": {
     title: "Unsupported or prohibited ARIA usage",
     detail:
       "Certain ARIA attributes are explicitly forbidden on specific elements or roles. Using them overrides native semantics incorrectly and may break assistive-technology behaviour.",
-    deprecated: true,
-    deprecatedReason:
-      "Deprecated in the current rule set. Video description track accuracy checks are now covered by the composite ACT-R38 rule.",
   },
   "ACT-R37": {
-    title: "Is this video audio-described?",
-    potentialTitle: "Is this video audio-described?",
-    issueTitle: "Video is not audio-described",
+    title: "Does this video have a strict accessible alternative?",
+    potentialTitle: "Does this video have a strict accessible alternative?",
+    issueTitle: "Video visual content has no strict accessible alternative",
     detail:
-      "Pre-recorded video must include a synchronised audio description track (or an alternative version) that describes important visual events not covered by the existing audio.",
+      "The video's visual content must pass at least one path: its important visual information is available through existing audio or an audio-description track, or the video is a complete media alternative for visible text.",
   },
   "ACT-R38": {
     title: "Is there an alternative to the visual content in this video?",
@@ -727,7 +727,7 @@ const WCAG_RULE_METADATA: Record<string, { sc: string[]; level: string[] }> = {
   "ACT-R22": { sc: ["1.2.2"], level: ["A"] }, "ACT-R23": { sc: ["1.2.1"], level: ["A"] }, "ACT-R24": { sc: ["1.2.3"], level: ["A"] },
   "ACT-R25": { sc: ["1.2.5"], level: ["AA"] }, "ACT-R26": { sc: ["1.2.1"], level: ["A"] }, "ACT-R27": { sc: ["1.2.2"], level: ["A"] },
   "ACT-R28": { sc: ["1.1.1", "4.1.2"], level: ["A"] }, "ACT-R29": { sc: ["1.2.1"], level: ["A"] }, "ACT-R30": { sc: ["1.2.1"], level: ["A"] },
-  "ACT-R31": { sc: ["1.4.8"], level: ["AAA"] }, "ACT-R32": { sc: [], level: ["Best Practice"] }, "ACT-R33": { sc: ["1.2.1"], level: ["A"] },
+  "ACT-R31": { sc: ["1.2.3"], level: ["A"] }, "ACT-R32": { sc: [], level: ["Best Practice"] }, "ACT-R33": { sc: ["1.2.1"], level: ["A"] },
   "ACT-R34": { sc: [], level: ["Best Practice"] }, "ACT-R35": { sc: ["1.2.1"], level: ["A"] }, "ACT-R36": { sc: ["4.1.2"], level: ["A"] },
   "ACT-R37": { sc: ["1.2.5"], level: ["AA"] }, "ACT-R38": { sc: ["1.2.3", "1.2.5", "1.2.8"], level: ["A", "AA", "AAA"] },
   "ACT-R39": { sc: ["1.1.1"], level: ["A"] }, "ACT-R40": { sc: ["1.3.1"], level: ["WAI-ARIA"] }, "ACT-R41": { sc: ["2.4.4"], level: ["A"] },

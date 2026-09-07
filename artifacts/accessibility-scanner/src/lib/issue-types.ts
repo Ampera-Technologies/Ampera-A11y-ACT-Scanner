@@ -71,7 +71,7 @@ export const BUG_TRANSITIONS: Record<string, string[]> = {
   release_to_retest: ["reopen", "verified"],
   reopen: ["in_progress"],
   verified: ["closed"],
-  closed: [],
+  closed: ["reopen"],
 };
 
 export const STANDARD_TRANSITIONS: Record<string, string[]> = {
@@ -83,7 +83,7 @@ export const STANDARD_TRANSITIONS: Record<string, string[]> = {
   release_to_retest: ["reopen", "verified"],
   reopen: ["in_progress"],
   verified: ["complete"],
-  complete: [],
+  complete: ["reopen"],
 };
 
 export const EPIC_TRANSITIONS: Record<string, string[]> = {
@@ -95,7 +95,7 @@ export const EPIC_TRANSITIONS: Record<string, string[]> = {
   release_to_retest: ["reopen", "verified"],
   reopen: ["in_progress"],
   verified: ["complete"],
-  complete: [],
+  complete: ["reopen"],
 };
 
 export function getStatusTransitions(type: string, status: string) {

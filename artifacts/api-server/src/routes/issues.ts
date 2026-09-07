@@ -183,7 +183,7 @@ function cleanCustomFields(value: unknown): Record<string, string> {
 }
 
 function sanitizeRichText(input: string): string {
-  const allowedTags = new Set(["p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li", "a", "code", "pre", "blockquote", "h3", "h4"]);
+  const allowedTags = new Set(["p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li", "a", "code", "pre", "blockquote", "h3", "h4", "table", "thead", "tbody", "tfoot", "tr", "th", "td"]);
   return input.slice(0, 50_000)
     .replace(/<!--[\s\S]*?-->|<(script|style|iframe|object|embed|svg|math)[\s\S]*?<\/\1\s*>/gi, "")
     .replace(/<(\/?)([a-z0-9]+)(?:\s[^>]*)?>/gi, (tag, closing: string, name: string) => {

@@ -103,7 +103,7 @@ const transitions: Record<IssueType, Record<string, readonly string[]>> = {
     release_to_retest: ["reopen", "verified"],
     reopen: ["in_progress"],
     verified: ["complete"],
-    complete: [],
+    complete: ["reopen"],
   },
   epic: {
     todo: ["in_progress"],
@@ -114,7 +114,7 @@ const transitions: Record<IssueType, Record<string, readonly string[]>> = {
     release_to_retest: ["reopen", "verified"],
     reopen: ["in_progress"],
     verified: ["complete"],
-    complete: [],
+    complete: ["reopen"],
   },
   test: {
     todo: ["in_progress"],
@@ -125,7 +125,7 @@ const transitions: Record<IssueType, Record<string, readonly string[]>> = {
     release_to_retest: ["reopen", "verified"],
     reopen: ["in_progress"],
     verified: ["complete"],
-    complete: [],
+    complete: ["reopen"],
   },
   task: {
     todo: ["in_progress"],
@@ -136,7 +136,7 @@ const transitions: Record<IssueType, Record<string, readonly string[]>> = {
     release_to_retest: ["reopen", "verified"],
     reopen: ["in_progress"],
     verified: ["complete"],
-    complete: [],
+    complete: ["reopen"],
   },
   story: {
     todo: ["in_progress"],
@@ -147,7 +147,7 @@ const transitions: Record<IssueType, Record<string, readonly string[]>> = {
     release_to_retest: ["reopen", "verified"],
     reopen: ["in_progress"],
     verified: ["complete"],
-    complete: [],
+    complete: ["reopen"],
   },
   request: {
     todo: ["in_progress"],
@@ -158,7 +158,7 @@ const transitions: Record<IssueType, Record<string, readonly string[]>> = {
     release_to_retest: ["reopen", "verified"],
     reopen: ["in_progress"],
     verified: ["complete"],
-    complete: [],
+    complete: ["reopen"],
   },
   bug: {
     todo: ["in_progress"],
@@ -171,7 +171,7 @@ const transitions: Record<IssueType, Record<string, readonly string[]>> = {
     release_to_retest: ["reopen", "verified"],
     reopen: ["in_progress"],
     verified: ["closed"],
-    closed: [],
+    closed: ["reopen"],
   },
 };
 

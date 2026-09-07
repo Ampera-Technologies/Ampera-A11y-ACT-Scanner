@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useId, useMemo, useState } from 'react';
-import { Bold, Italic, Underline, Heading2, List, ListOrdered, Link as LinkIcon } from 'lucide-react';
+import { Bold, CodeXml, Italic, Underline, Heading2, List, ListOrdered, Link as LinkIcon, Table2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Person } from '../../lib/issue-types';
 
@@ -29,6 +29,13 @@ export function RichTextEditor({ value, onChange, placeholder, people = [] }: Ri
     document.execCommand(command, false, arg);
     ref.current?.focus();
     onChange(ref.current?.innerHTML || '');
+  };
+
+  const insertTable = () => {
+    exec(
+      'insertHTML',
+      '<table><thead><tr><th>Heading 1</th><th>Heading 2</th><th>Heading 3</th></tr></thead><tbody><tr><td>Cell</td><td>Cell</td><td>Cell</td></tr><tr><td>Cell</td><td>Cell</td><td>Cell</td></tr></tbody></table><p><br></p>',
+    );
   };
 
   const mentionMatches = useMemo(() => {
@@ -195,13 +202,19 @@ export function RichTextEditor({ value, onChange, placeholder, people = [] }: Ri
         }} title="Link" aria-label="Insert link">
           <LinkIcon className="h-4 w-4" />
         </Button>
+        <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={(e) => { e.preventDefault(); insertTable(); }} title="Insert table" aria-label="Insert table">
+          <Table2 className="h-4 w-4" />
+        </Button>
+        <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={(e) => { e.preventDefault(); exec('formatBlock', 'PRE'); }} title="HTML code block" aria-label="Format as HTML code block">
+          <CodeXml className="h-4 w-4" />
+        </Button>
 
       </div>
       
       <p id={helpId} className="sr-only">Use the toolbar buttons to format text. Press Tab to move between formatting controls and the editor.</p>
       <div
         ref={ref}
-        className="min-h-[120px] p-3 text-sm outline-none prose prose-sm max-w-none dark:prose-invert empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground"
+        className="min-h-[120px] p-3 text-sm outline-none prose prose-sm max-w-none dark:prose-invert prose-table:w-full prose-table:border-collapse prose-th:border prose-th:p-2 prose-td:border prose-td:p-2 empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground"
         contentEditable
         role="textbox"
         aria-multiline="true"

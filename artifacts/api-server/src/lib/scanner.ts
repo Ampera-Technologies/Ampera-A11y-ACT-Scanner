@@ -158,6 +158,7 @@ export interface RuleMeta {
   potentialDescription?: string;
   deprecated?: boolean;
   deprecatedReason?: string;
+  relatedRules?: string[];
 }
 export interface ScanIssue {
   ruleId: string;
@@ -287,7 +288,7 @@ const WCAG_MAPPING: Record<string, { sc: string[]; level: string[] }> = {
   "ACT-R28": { sc: ["1.1.1", "4.1.2"], level: ["A"] },
   "ACT-R29": { sc: ["1.2.1"], level: ["A"] },
   "ACT-R30": { sc: ["1.2.1"], level: ["A"] },
-  "ACT-R31": { sc: ["1.2.1"], level: ["A"] },
+  "ACT-R31": { sc: ["1.2.3"], level: ["A"] },
   "ACT-R32": { sc: [], level: ["Best Practice"] },
   "ACT-R33": { sc: ["1.2.1"], level: ["A"] },
   "ACT-R34": { sc: [], level: ["Best Practice"] },
@@ -416,6 +417,7 @@ const RULE_DESCRIPTIONS: Record<
     potentialDescription?: string;
     deprecated?: boolean;
     deprecatedReason?: string;
+    relatedRules?: string[];
   }
 > = {
   "ACT-R1": {
@@ -561,18 +563,22 @@ const RULE_DESCRIPTIONS: Record<
     issueDescription: "Audio without a transcript",
     potentialDescription: "Does the audio have a transcript?",
     remediation: "Provide a transcript or equivalent alternative content",
+    relatedRules: ["ACT-R38"],
   },
   "ACT-R24": {
-    type: "Issue",
-    description: "Video element visual content has no transcript",
+    type: "Potential Issue",
+    description: "Media alternative may be insufficient",
     remediation:
-      "Provide a text transcript or equivalent media alternative that describes all visual content in the video",
+      "Review captions, transcripts, or audio alternatives and ensure they convey every meaningful piece of information in the media",
   },
   "ACT-R25": {
-    type: "Issue",
-    description: "Video element visual content has no audio description",
+    type: "Potential Issue",
+    description: "Is this video audio-described?",
+    issueDescription: "Important visual information is not available through the video's audio",
+    potentialDescription: "Does the existing audio convey all important visual information?",
     remediation:
       "Provide an audio description track or an alternative version of the video that describes all visual information",
+    relatedRules: ["ACT-R37"],
   },
   "ACT-R26": {
     type: "Potential Issue",
@@ -586,8 +592,8 @@ const RULE_DESCRIPTIONS: Record<
   },
   "ACT-R29": {
     type: "Potential Issue",
-    description: "Audio content is a media alternative for text",
-    remediation: "Provide a visible transcript/text alternative and label it as an audio alternative",
+    description: "<audio> element content is media alternative for text",
+    remediation: "Provide all auditory information as visible text included in the accessibility tree, and visibly label the audio as an alternative for text on the page",
   },
   "ACT-R30": {
     type: "Potential Issue",
@@ -597,9 +603,9 @@ const RULE_DESCRIPTIONS: Record<
   },
   "ACT-R31": {
     type: "Potential Issue",
-    description: "Video with audio is a media alternative for text",
+    description: "<video> element content is media alternative for text",
     remediation:
-      "Provide a visible text alternative and label it as a video alternative for text",
+      "Provide all video information as visible text included in the accessibility tree, and visibly label the video as an alternative for text on the page",
   },
   "ACT-R32": {
     type: "Potential Issue",
@@ -623,25 +629,23 @@ const RULE_DESCRIPTIONS: Record<
   },
   "ACT-R35": {
     type: "Potential Issue",
-    description: "Video without audio has an accessible alternative",
+    description: "<video> element visual-only content has accessible alternative",
     remediation:
-      "Provide a text alternative, transcript, or audio-described alternative for video-only content",
+      "Provide a media alternative for text, a transcript, or an audio-track alternative for visible prerecorded video without audio",
   },
   "ACT-R36": {
     type: "Issue",
     description: "ARIA attribute is prohibited on this role",
     remediation:
       "Remove ARIA attributes that are prohibited for the element's role per the ARIA specification",
-    deprecated: true,
-    deprecatedReason:
-      "Deprecated in the current rule set; video description track accuracy checks are now covered by the composite ACT-R38 rule",
   },
   "ACT-R37": {
     type: "Potential Issue",
-    description: "Is this video audio-described?",
-    issueDescription: "Video is not audio-described",
-    potentialDescription: "Is this video audio-described?",
-    remediation: "Provide audio description or alternative version",
+    description: "Does this video have a strict accessible alternative?",
+    issueDescription: "Video visual content has no strict accessible alternative",
+    potentialDescription: "Does this video have a strict accessible alternative?",
+    remediation:
+      "Provide audio description or a complete media alternative for text",
   },
   "ACT-R38": {
     type: "Potential Issue",
@@ -1933,6 +1937,70 @@ function isTrackerUrl(rawUrl: string): boolean {
   }
 }
 
+const MAX_REPLAY_STYLESHEET_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Serialize the current DOM together with the CSS that Chromium actually
+ * loaded. Replays are deliberately network-isolated, so leaving external
+ * <link> elements in page.content() produces an unstyled and often badly
+ * distorted document.
+ */
+async function captureReplayHtml(
+  page: Page,
+  stylesheetResponses: Map<string, Promise<string | null>>,
+): Promise<string> {
+  const cssEntries: Array<[string, string]> = [];
+  let capturedBytes = 0;
+  for (const [url, pendingCss] of stylesheetResponses) {
+    const css = await pendingCss.catch(() => null);
+    if (!css) continue;
+    const bytes = Buffer.byteLength(css);
+    if (capturedBytes + bytes > MAX_REPLAY_STYLESHEET_BYTES) break;
+    capturedBytes += bytes;
+    cssEntries.push([url, css]);
+  }
+
+  return page.evaluate((loadedStylesheets) => {
+    const cssByUrl = new Map(loadedStylesheets);
+    const clone = document.documentElement.cloneNode(true) as HTMLElement;
+    const sourceLinks = Array.from(
+      document.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"]'),
+    );
+    const clonedLinks = Array.from(
+      clone.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"]'),
+    );
+
+    sourceLinks.forEach((sourceLink, index) => {
+      const clonedLink = clonedLinks[index];
+      if (!clonedLink) return;
+      let css = cssByUrl.get(sourceLink.href) ?? "";
+      if (!css && sourceLink.sheet) {
+        try {
+          css = Array.from(sourceLink.sheet.cssRules)
+            .map((rule) => rule.cssText)
+            .join("\n");
+        } catch {
+          // Cross-origin CSSOM access can be denied. The captured response is
+          // used above when available; otherwise omit the unusable link.
+        }
+      }
+      if (!css) {
+        clonedLink.remove();
+        return;
+      }
+      const style = document.createElement("style");
+      style.setAttribute("data-a11y-replay-stylesheet", sourceLink.href);
+      style.textContent = css;
+      clonedLink.replaceWith(style);
+    });
+
+    const doctype = document.doctype
+      ? `<!DOCTYPE ${document.doctype.name}>`
+      : "<!doctype html>";
+    return `${doctype}\n${clone.outerHTML}`;
+  }, cssEntries);
+}
+
 async function _scanPageInternal(
   url: string,
   options: {
@@ -2032,12 +2100,14 @@ async function _scanPageInternal(
     // visibility used by several rules.  Analytics/tracker requests are also
     // blocked by hostname (see TRACKER_HOSTS).
     let allowVisualImages = false;
+    let allowMediaMetadata = false;
+    const replayStylesheets = new Map<string, Promise<string | null>>();
     await page.setRequestInterception(true);
     page.on("request", (req) => {
       const type = req.resourceType();
       if (
         (type === "image" && !allowVisualImages) ||
-        type === "media" ||
+        (type === "media" && !allowMediaMetadata) ||
         type === "font"
       ) {
         req.abort().catch(() => {});
@@ -2051,6 +2121,23 @@ async function _scanPageInternal(
         return;
       }
       req.continue().catch(() => {});
+    });
+    page.on("response", (response) => {
+      try {
+        const request = response.request();
+        if (
+          request.resourceType() === "stylesheet" &&
+          response.status() >= 200 &&
+          response.status() < 300
+        ) {
+          replayStylesheets.set(
+            response.url(),
+            response.text().catch(() => null),
+          );
+        }
+      } catch {
+        // The page may close while a stylesheet response is being processed.
+      }
     });
 
     // Set a realistic Chrome user-agent and request headers to minimise bot detection
@@ -2816,7 +2903,7 @@ async function _scanPageInternal(
     // would make the displayed HTML disagree with the state that produced an
     // issue.
     try {
-      pageHtml = await page.content();
+      pageHtml = await captureReplayHtml(page, replayStylesheets);
       logger.info(
         { url, sizeKb: Math.round(pageHtml.length / 1024) },
         "Rule-time page HTML captured",
@@ -2833,9 +2920,41 @@ async function _scanPageInternal(
       "Running ACT accessibility rules on rule-time DOM",
     );
     await onStage?.("analyzing");
+    // Media requests stay blocked during navigation so large videos cannot
+    // delay or exhaust a scan. Briefly allow metadata loading here so media
+    // rules can inspect decoded audio tracks instead of treating every
+    // video/* container as unknown. Restore author-provided preload attributes
+    // so this scanner-only preparation does not alter captured issue markup.
+    allowMediaMetadata = true;
+    try {
+      await page.evaluate(async () => {
+        const videos = Array.from(document.querySelectorAll("video"));
+        await Promise.all(videos.map(async (video) => {
+          if (video.readyState >= HTMLMediaElement.HAVE_METADATA) return;
+          const originalPreload = video.getAttribute("preload");
+          try {
+            video.preload = "metadata";
+            video.load();
+            await new Promise<void>((resolve) => {
+              const finish = () => resolve();
+              video.addEventListener("loadedmetadata", finish, { once: true });
+              video.addEventListener("error", finish, { once: true });
+              window.setTimeout(finish, 5000);
+            });
+          } finally {
+            if (originalPreload === null) video.removeAttribute("preload");
+            else video.setAttribute("preload", originalPreload);
+          }
+        }));
+      });
+    } finally {
+      allowMediaMetadata = false;
+    }
     const actResult = await runACTRules(
       page,
-      options.rules?.some((rule) => rule.toUpperCase() === "ACT-R118") ?? false,
+      options.rules?.some((rule) =>
+        ["ACT-R24", "ACT-R118"].includes(rule.toUpperCase()),
+      ) ?? false,
     );
     let issues = actResult.issues;
     const ruleStats = actResult.stats;
@@ -2869,6 +2988,7 @@ async function _scanPageInternal(
         const explored = await exploreInteractiveStates(
           page,
           triggers,
+          replayStylesheets,
           options.rules,
         );
         for (const stateIssue of explored.issues) {
@@ -3526,6 +3646,7 @@ async function discoverSafeInteractionTriggers(
 async function exploreInteractiveStates(
   page: Page,
   triggers: SafeInteractionTrigger[],
+  replayStylesheets: Map<string, Promise<string | null>>,
   selectedRules?: string[],
 ): Promise<{
   issues: ScanIssue[];
@@ -3618,7 +3739,8 @@ async function exploreInteractiveStates(
       const stateKey = `interaction-${index + 1}`;
       const result = await runACTRules(
         page,
-        selectedRuleSet?.has("ACT-R118") ?? false,
+        !!selectedRuleSet &&
+          (selectedRuleSet.has("ACT-R24") || selectedRuleSet.has("ACT-R118")),
       );
       stats.push(...result.stats);
       let stateIssues = result.issues.filter(
@@ -3710,7 +3832,7 @@ async function exploreInteractiveStates(
       if (stateIssues.length > 0) {
         const [screenshotBuffer, pageHtml] = await Promise.all([
           page.screenshot({ type: "jpeg", quality: 40, fullPage: true }),
-          page.content(),
+          captureReplayHtml(page, replayStylesheets),
         ]);
         states.push({
           key: stateKey,

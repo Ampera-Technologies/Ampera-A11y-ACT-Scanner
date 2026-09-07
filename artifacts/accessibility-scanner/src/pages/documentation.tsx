@@ -57,6 +57,7 @@ const ruleReferences = Object.entries(ACT_RULES).map(([id, rule]) => ({
   detail: rule.detail,
   deprecated: rule.deprecated,
   deprecatedReason: rule.deprecatedReason,
+  relatedRules: rule.relatedRules,
   wcagCriteria: rule.wcagCriteria,
   wcagLevel: rule.wcagLevel,
   eaa: rule.eaa,
@@ -1097,6 +1098,15 @@ function RuleList({ rules }: { rules: typeof ruleReferences }) {
                 <TooltipContent className="max-w-xs text-xs">{rule.deprecatedReason}</TooltipContent>
               </Tooltip>
             )}
+            {rule.relatedRules?.map((relatedRule) => (
+              <Badge
+                key={relatedRule}
+                variant="outline"
+                className="text-[10px] border-blue-500/50 bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300"
+              >
+                Related: {relatedRule}
+              </Badge>
+            ))}
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
             {rule.wcagLevel

@@ -152,12 +152,12 @@ const ALL_RULES: { id: string; label: string }[] = [
   },
   {
     id: "ACT-R29",
-    label: "Audio content is a media alternative for text (WCAG 1.2.1)",
+    label: "<audio> element content is media alternative for text (WCAG 1.2.1)",
   },
   { id: "ACT-R30", label: "Audio content has a text alternative (WCAG 1.2.1)" },
   {
     id: "ACT-R31",
-    label: "Video with audio is a media alternative for text (WCAG 1.2.1)",
+    label: "<video> element content is media alternative for text (WCAG 1.2.3)",
   },
   { id: "ACT-R32", label: "Video visual-only content has an audio-track alternative (best practice)" },
   {
@@ -168,10 +168,13 @@ const ALL_RULES: { id: string; label: string }[] = [
   {
     id: "ACT-R35",
     label:
-      "Does video without audio have an accessible alternative? (WCAG 1.2.1)",
+      "<video> element visual-only content has accessible alternative (WCAG 1.2.1)",
   },
   { id: "ACT-R36", label: "Unsupported ARIA usage (WCAG 4.1.2)" },
-  { id: "ACT-R37", label: "Is this video audio-described? (WCAG 1.2.5)" },
+  {
+    id: "ACT-R37",
+    label: "Video visual content has a strict accessible alternative (WCAG 1.2.5)",
+  },
   {
     id: "ACT-R38",
     label:

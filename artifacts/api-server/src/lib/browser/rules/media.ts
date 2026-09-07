@@ -10,6 +10,27 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
   const hasDeclaredAudioTrack = (video: HTMLVideoElement): boolean | "unknown" => {
     const audioTracks = (video as HTMLVideoElement & { audioTracks?: { length: number } }).audioTracks;
     if (audioTracks) return audioTracks.length > 0;
+
+    // Chromium does not expose HTMLVideoElement.audioTracks, but captureStream()
+    // reflects the decoded media tracks once metadata has loaded.
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      const captureStream = (video as HTMLVideoElement & {
+        captureStream?: () => MediaStream;
+        mozCaptureStream?: () => MediaStream;
+      }).captureStream ?? (video as HTMLVideoElement & {
+        mozCaptureStream?: () => MediaStream;
+      }).mozCaptureStream;
+      if (captureStream) {
+        try {
+          const stream = captureStream.call(video);
+          return stream.getAudioTracks().length > 0;
+        } catch {
+          // Cross-origin or browser restrictions can make stream inspection
+          // unavailable; continue with conservative declaration checks.
+        }
+      }
+    }
+
     const sources = getMediaSources(video);
     if (sources.length === 0) return "unknown";
     for (const source of sources) {
@@ -19,7 +40,9 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
       const src = source.getAttribute("src") || "";
       if (/\.(mp3|m4a|aac|wav|ogg|oga|flac)([?#].*)?$/i.test(src)) return true;
     }
-    return false;
+    // A video/* MIME type or video filename describes the container, not its
+    // streams. MP4/WebM files commonly contain audio, so absence is unknown.
+    return "unknown";
   };
 
   const isVideoWithoutAudio = (video: HTMLVideoElement): boolean | "unknown" => {
@@ -29,23 +52,50 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
   };
 
   const hasVisibleAccessibleAlternative = (media: Element): boolean => {
+    const describesAlternative = (text: string): boolean => {
+      const normalized = text.replace(/\s+/g, " ").trim();
+      if (!normalized) return false;
+      const alternativeTerms = /transcript|text version|text alternative|audio description|described version|video alternative|audio alternative|alternative/i;
+      if (!alternativeTerms.test(normalized)) return false;
+      const negativeClaim = /\b(no|not|without|missing|omit(?:s|ted)?|incomplete|unavailable|not provided)\b.{0,100}\b(transcript|text version|text alternative|audio description|described version|video alternative|audio alternative|alternative)\b/i;
+      return !negativeClaim.test(normalized);
+    };
+
     const describedBy = media.getAttribute("aria-describedby");
     if (describedBy) {
       const references = describedBy.split(/\s+/)
         .map((id) => document.getElementById(id))
         .filter((el): el is HTMLElement => !!el);
-      if (references.some((el) => isVisible(el) && !isProgrammaticallyHidden(el) && !!getAccessibleName(el))) return true;
+      if (references.some((el) =>
+        isVisible(el) &&
+        !isProgrammaticallyHidden(el) &&
+        describesAlternative(getAccessibleName(el).trim() || (el.textContent || "").trim())
+      )) return true;
     }
-    const label = getAccessibleName(media);
-    if (label && !/^(video|audio|media)$/i.test(label.trim())) return true;
     const container = media.closest("figure,section,article,div") ?? media.parentElement;
     if (!container) return false;
     const candidates = Array.from(container.querySelectorAll("a[href], [role='link'], p, figcaption, [id], [class]"))
       .filter((el) => el !== media && isVisible(el) && !isProgrammaticallyHidden(el));
     return candidates.some((el) => {
       const text = getAccessibleName(el).trim() || (el.textContent || "").trim();
-      return text.length > 0 && /transcript|text version|text alternative|audio description|described version|video alternative|audio alternative|alternative/i.test(text);
+      return describesAlternative(text);
     });
+  };
+
+  const hasDeclaredMediaAlternative = (media: HTMLMediaElement): boolean => {
+    const declaredTrack = !!media.querySelector(
+      'track[kind="captions"], track[kind="subtitles"], track[kind="descriptions"]',
+    );
+    const textTrack = Array.from(media.textTracks || []).some((track) =>
+      track.kind === "captions" ||
+      track.kind === "subtitles" ||
+      track.kind === "descriptions"
+    );
+    const player = media.closest(".video-js");
+    const playerAlternative = !!player?.querySelector(
+      ".vjs-subs-caps-button:not(.vjs-hidden), .vjs-descriptions-button:not(.vjs-disabled):not(.vjs-hidden)",
+    );
+    return declaredTrack || textTrack || playerAlternative || hasVisibleAccessibleAlternative(media);
   };
 
   const isApplicableVideo = (video: HTMLVideoElement): boolean => {
@@ -114,6 +164,8 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
     if (!(video instanceof HTMLVideoElement) || !isApplicableVideo(video)) return;
     const silentState = isVideoWithoutAudio(video);
     const hasAlternative = hasVisibleAccessibleAlternative(video);
+    // Unknown audio presence must not suppress R31. Because equivalence still
+    // requires human review, the conservative result remains a Potential Issue.
     const ruleId = silentState === true ? "ACT-R26" : "ACT-R31";
     if (!hasAlternative) {
       results.push({ ruleId, type: "Potential Issue", impact: "serious", description: silentState === true
@@ -128,6 +180,27 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
     if (!transcript) {
       results.push({ ruleId: "ACT-R29", type: "Potential Issue", impact: "serious", description: "Audio may not have a visible text alternative labeled as an audio alternative", element: outerHtmlSnippet(audio), elementContext: elementContextForAI(audio), selector: getSelector(audio) });
     }
+  });
+
+  // ACT-R33: The presence of a caption, transcript, description, or other
+  // declared media alternative does not prove that it conveys every meaningful
+  // part of the recording. Emit one Potential Issue per applicable media
+  // element with a concrete alternative so a reviewer can compare the content.
+  document.querySelectorAll("video, audio").forEach((media) => {
+    if (!(media instanceof HTMLMediaElement)) return;
+    const applicable = media instanceof HTMLVideoElement
+      ? isApplicableVideo(media)
+      : media instanceof HTMLAudioElement && isApplicableAudio(media);
+    if (!applicable || !hasDeclaredMediaAlternative(media)) return;
+    results.push({
+      ruleId: "ACT-R33",
+      type: "Potential Issue",
+      impact: "serious",
+      description: "The detected media alternative may not fully represent all audible and visual content — verify that it is accurate, complete, and equivalent",
+      element: outerHtmlSnippet(media),
+      elementContext: elementContextForAI(media),
+      selector: getSelector(media),
+    });
   });
 
   // ACT-R30 is Alfa's composite audio rule: it passes when either the
@@ -194,23 +267,28 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
     }
   });
 
-  // ════════════════════════════════════════════════════════════════════════
-  // ACT-R37: Video missing audio description (WCAG 1.2.5)
-  // ════════════════════════════════════════════════════════════════════════
+  // ACT-R37: Strict accessible alternative for video visual content.
+  // This composite passes when either the audio-description path represented
+  // by R25 or the media-alternative-for-text path represented by R31 passes.
   document.querySelectorAll("video").forEach((video) => {
-    if (!(video instanceof HTMLVideoElement)) return;
-    if (isProgrammaticallyHidden(video)) return;
-    const rect = video.getBoundingClientRect();
-    if (rect.width < 20 || rect.height < 20) return;
+    if (!(video instanceof HTMLVideoElement) || !isApplicableVideo(video)) return;
+    if (isVideoWithoutAudio(video) !== false) return;
     const tracks = Array.from(video.textTracks || []);
-    const hasCaptions = tracks.some((t: any) => t.kind === "captions" || t.kind === "subtitles");
-    const hasDescriptions = tracks.some((t: any) => t.kind === "descriptions");
-    const videoJsContainer = video.closest(".video-js");
-    const hasVideoJsCaptions = !!videoJsContainer?.querySelector(".vjs-subs-caps-button:not(.vjs-hidden)") && !!videoJsContainer?.querySelector(".vjs-menu-item.vjs-selected.vjs-subtitles-menu-item");
-    const hasVideoJsDescriptions = !!videoJsContainer?.querySelector(".vjs-descriptions-button:not(.vjs-disabled):not(.vjs-hidden)");
-    if (!hasDescriptions && !hasVideoJsDescriptions && !hasCaptions && !hasVideoJsCaptions) {
-      results.push({ ruleId: "ACT-R37", type: "Potential Issue", impact: "serious", description: "Video element is missing an audio description track — review whether the video contains important visual information", element: outerHtmlSnippet(video), elementContext: elementContextForAI(video), selector: getSelector(video) });
-    }
+    const hasDescriptionTrack =
+      !!video.querySelector('track[kind="descriptions"]') ||
+      tracks.some((track: any) => track.kind === "descriptions") ||
+      !!video.closest(".video-js")?.querySelector(".vjs-descriptions-button:not(.vjs-disabled):not(.vjs-hidden)");
+    const passesMediaAlternativeForText = hasVisibleAccessibleAlternative(video);
+    if (hasDescriptionTrack || passesMediaAlternativeForText) return;
+    results.push({
+      ruleId: "ACT-R37",
+      type: "Potential Issue",
+      impact: "serious",
+      description: "Review whether the video's visual content has a strict accessible alternative through audio description or a complete media alternative for text",
+      element: outerHtmlSnippet(video),
+      elementContext: elementContextForAI(video),
+      selector: getSelector(video),
+    });
   });
 
   // ACT-R38: Alternative to visual video content (SIA-R38)
@@ -267,7 +345,7 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // ACT-R24: Video element has no text transcript (WCAG 1.2.3)
+  // ACT-R24: Existing media alternative may be incomplete (WCAG 1.2.3)
   // ════════════════════════════════════════════════════════════════════════
   document.querySelectorAll("video").forEach((video) => {
     if (!(video instanceof HTMLVideoElement)) return;
@@ -276,51 +354,44 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
     if (rect.width < 20 || rect.height < 20) return;
     const audioState = isVideoWithoutAudio(video);
     if (audioState === true && video.hasAttribute("autoplay")) return;
-    // Check for any caption/subtitle/description track
+    // R24 is applicable when an alternative exists. Its completeness cannot be
+    // established from markup, so surface the media as a manual-review
+    // candidate rather than treating the presence of captions as a pass.
     const hasTrack = !!video.querySelector('track[kind="captions"],track[kind="subtitles"],track[kind="descriptions"]');
     const hasTextTracks = video.textTracks && Array.from(video.textTracks).some((t: any) =>
       t.kind === "captions" || t.kind === "subtitles" || t.kind === "descriptions"
     );
-    if (hasTrack || hasTextTracks) return;
-    // Check for nearby transcript link/text within the parent or grandparent
     const container = video.closest("figure,section,div,article") ?? video.parentElement;
-    const nearbyText = (container?.textContent ?? "").toLowerCase();
     const transcriptKeywords = ["transcript", "text version", "text alternative", "text description", "read transcript"];
-    if (transcriptKeywords.some((k) => nearbyText.includes(k))) return;
-    if (video.getAttribute("aria-describedby")) return;
-    // Alfa SIA-R24 asks whether the video's visual content has a transcript;
-    // the browser engine cannot verify completeness or equivalence
-    // automatically. Siteimprove keeps this as a manual question rather than
-    // reporting every otherwise valid video as an automatic finding.
+    const hasNearbyAlternative = Array.from(
+      container?.querySelectorAll<HTMLAnchorElement>("a[href]") ?? [],
+    ).some((link) => {
+      const label = `${link.textContent ?? ""} ${link.getAttribute("aria-label") ?? ""}`.toLowerCase();
+      return transcriptKeywords.some((keyword) => label.includes(keyword));
+    });
+    const hasDescribedBy = !!video.getAttribute("aria-describedby");
+    if (!hasTrack && !hasTextTracks && !hasNearbyAlternative && !hasDescribedBy) return;
     if (!EMIT_MANUAL_ONLY_RULES) return;
-    results.push({ ruleId: "ACT-R24", type: "Potential Issue", impact: "serious", description: "Video element has no text transcript or caption track — review whether a transcript is available (WCAG 1.2.3)", element: outerHtmlSnippet(video), elementContext: elementContextForAI(video), selector: getSelector(video) });
+    results.push({ ruleId: "ACT-R24", type: "Potential Issue", impact: "serious", description: "A media alternative exists — review whether it completely and accurately conveys all information in the video", element: outerHtmlSnippet(video), elementContext: elementContextForAI(video), selector: getSelector(video) });
   });
 
   // ════════════════════════════════════════════════════════════════════════
-  // ACT-R25: Video missing dedicated audio description track (WCAG 1.2.5)
-  // Distinct from R37 (broader potential issue): R25 fires specifically when
-  // the video has captions but no <track kind="descriptions"> at all.
+  // ACT-R25: Is the visual information available through the video's existing
+  // audio or a separate audio-description track? This is inherently a manual
+  // content judgment, so detected candidates remain Potential Issues.
   // ════════════════════════════════════════════════════════════════════════
   document.querySelectorAll("video").forEach((video) => {
-    if (!(video instanceof HTMLVideoElement)) return;
-    if (isProgrammaticallyHidden(video)) return;
-    const rect = video.getBoundingClientRect();
-    if (rect.width < 20 || rect.height < 20) return;
+    if (!(video instanceof HTMLVideoElement) || !isApplicableVideo(video)) return;
     const audioState = isVideoWithoutAudio(video);
-    if (audioState === true && video.hasAttribute("autoplay")) return;
-    // Only fire R25 when the video HAS captions (it has audio context) but no descriptions track
-    const hasCaptionsTrack = !!video.querySelector('track[kind="captions"],track[kind="subtitles"]');
-    const hasCaptionsTextTrack = video.textTracks && Array.from(video.textTracks).some((t: any) =>
-      t.kind === "captions" || t.kind === "subtitles"
-    );
-    if (!hasCaptionsTrack && !hasCaptionsTextTrack) return; // R37 will cover this case
-    // Now check if a descriptions track is also present
+    // Do not generalize this review question to silent videos or media whose
+    // audio presence could not be established.
+    if (audioState !== false) return;
     const hasDescriptions = !!video.querySelector('track[kind="descriptions"]') ||
       (video.textTracks && Array.from(video.textTracks).some((t: any) => t.kind === "descriptions"));
     const videoJsContainer = video.closest(".video-js");
     const hasVideoJsDescriptions = !!videoJsContainer?.querySelector(".vjs-descriptions-button:not(.vjs-disabled):not(.vjs-hidden)");
     if (!hasDescriptions && !hasVideoJsDescriptions) {
-      results.push({ ruleId: "ACT-R25", type: "Potential Issue", impact: "moderate", description: "Video has captions but no audio description track — review whether visual-only content is described for blind users (WCAG 1.2.5)", element: outerHtmlSnippet(video), elementContext: elementContextForAI(video), selector: getSelector(video) });
+      results.push({ ruleId: "ACT-R25", type: "Potential Issue", impact: "serious", description: "Review whether the video's existing audio conveys all important visual information or whether a separate audio description is needed", element: outerHtmlSnippet(video), elementContext: elementContextForAI(video), selector: getSelector(video) });
     }
   });
 
