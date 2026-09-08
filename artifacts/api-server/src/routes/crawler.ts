@@ -221,6 +221,21 @@ function validateCreateCrawler(body: any): { data: any; error?: string } {
     }
     scheduledStartAt = parsed;
   }
+  let proxyPacUrl: string | undefined;
+  if (body.proxyPacUrl != null && body.proxyPacUrl !== "") {
+    if (typeof body.proxyPacUrl !== "string" || body.proxyPacUrl.length > 2048) {
+      return { data: null, error: "proxyPacUrl must be a valid proxy or PAC URL" };
+    }
+    try {
+      const parsed = new URL(body.proxyPacUrl.trim());
+      if (!["http:", "https:", "socks4:", "socks5:"].includes(parsed.protocol)) {
+        return { data: null, error: "proxyPacUrl must use HTTP(S), SOCKS4, or SOCKS5" };
+      }
+      proxyPacUrl = parsed.toString();
+    } catch {
+      return { data: null, error: "proxyPacUrl must be a valid proxy or PAC URL" };
+    }
+  }
   return {
     data: {
       seedUrl: body.seedUrl.trim(),
@@ -240,6 +255,7 @@ function validateCreateCrawler(body: any): { data: any; error?: string } {
       tabPoolSize: typeof body.tabPoolSize === "number" ? Math.min(5, Math.max(1, body.tabPoolSize)) : 1,
       scanDelayMs: typeof body.scanDelayMs === "number" ? Math.min(100000, Math.max(0, body.scanDelayMs)) : 10000,
       discoveryWorkers: typeof body.discoveryWorkers === "number" ? Math.min(4, Math.max(1, Math.floor(body.discoveryWorkers))) : 2,
+      proxyPacUrl,
       authenticated: body.authenticated === true,
       authUrl: body.authUrl,
       authUsernameSelector: body.authUsernameSelector,
@@ -352,6 +368,7 @@ router.post("/crawler/sessions", requireAuth, async (req: Request, res: Response
     tabPoolSize: data.tabPoolSize,
     scanDelayMs: data.scanDelayMs,
     discoveryWorkers: data.discoveryWorkers,
+    proxyPacUrl: data.proxyPacUrl,
     authenticated: data.authenticated,
     authUrl: data.authUrl,
     authUsernameSelector: data.authUsernameSelector,

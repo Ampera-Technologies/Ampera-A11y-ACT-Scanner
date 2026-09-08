@@ -20,6 +20,15 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth";
+import { OPEN_SETTINGS_EVENT } from "@/components/layout";
+import {
+  ACTIVE_PROXY_CHANGED_EVENT,
+  ACTIVE_PROXY_KEY,
+  PROXY_LIST_CHANGED_EVENT,
+  PROXY_LS_KEY,
+  getActiveProxy,
+  loadSavedProxies,
+} from "@/pages/settings";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Globe, Map, Link2, Shield, Zap, RefreshCw, RotateCcw, Upload, AlertTriangle, Building2, Users, Clock, Database, CheckCircle2, Info } from "lucide-react";
 import { ScanLevelSelector } from "@/components/ScanLevelSelector";
@@ -115,6 +124,8 @@ interface FormValues {
   tabPoolSize: number;
   scanDelayMs: number;
   authenticated: boolean;
+  proxyEnabled: boolean;
+  proxyPacUrl: string;
   authUrl: string;
   authUsernameSelector: string;
   authPasswordSelector: string;
@@ -184,6 +195,8 @@ export default function CrawlerNewPage() {
       tabPoolSize: 1,
       scanDelayMs: 10000,
       authenticated: false,
+      proxyEnabled: false,
+      proxyPacUrl: "",
       authUrl: "",
       authUsernameSelector: "#username",
       authPasswordSelector: "#password",
@@ -202,10 +215,44 @@ export default function CrawlerNewPage() {
     },
   });
 
-  const { watch, register, setValue, handleSubmit, resetField, formState: { errors } } = form;
+  const { watch, register, setValue, getValues, clearErrors, handleSubmit, resetField, formState: { errors } } = form;
   const values = watch();
   const [activeTab, setActiveTab] = useState<CrawlerTab>("basic");
   const activeTabIndex = CRAWLER_TABS.indexOf(activeTab);
+  const [savedProxies, setSavedProxies] = useState<string[]>([]);
+
+  useEffect(() => {
+    const refreshProxies = () => {
+      const proxies = loadSavedProxies();
+      const activeProxy = getActiveProxy();
+      setSavedProxies(proxies);
+
+      const selectedProxy = getValues("proxyPacUrl");
+      if (selectedProxy && proxies.includes(selectedProxy)) {
+        return;
+      }
+      if (activeProxy && proxies.includes(activeProxy)) {
+        setValue("proxyPacUrl", activeProxy, { shouldValidate: true });
+      } else {
+        setValue("proxyPacUrl", proxies[0] ?? "", { shouldValidate: true });
+      }
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === PROXY_LS_KEY || event.key === ACTIVE_PROXY_KEY) refreshProxies();
+    };
+
+    refreshProxies();
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(ACTIVE_PROXY_CHANGED_EVENT, refreshProxies);
+    window.addEventListener(PROXY_LIST_CHANGED_EVENT, refreshProxies);
+    window.addEventListener("focus", refreshProxies);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(ACTIVE_PROXY_CHANGED_EVENT, refreshProxies);
+      window.removeEventListener(PROXY_LIST_CHANGED_EVENT, refreshProxies);
+      window.removeEventListener("focus", refreshProxies);
+    };
+  }, [getValues, setValue]);
 
   // Discovery cache detection — check when seedUrl changes
   const [discoveryCache, setDiscoveryCache] = useState<DiscoveryCache | null>(null);
@@ -306,6 +353,7 @@ export default function CrawlerNewPage() {
       tabPoolSize: data.tabPoolSize,
       scanDelayMs: data.scanDelayMs,
       authenticated: data.authenticated,
+      proxyPacUrl: data.proxyEnabled ? data.proxyPacUrl.trim() : undefined,
       incremental: data.incremental,
       detectBrokenLinks: data.detectBrokenLinks,
        autoScan: data.crawlOnly ? false : data.autoScan,
@@ -818,7 +866,7 @@ export default function CrawlerNewPage() {
 
           {/* AUTH */}
            <TabsContent value="auth" className="grid gap-4 pt-4 lg:grid-cols-2 lg:items-stretch">
-             <Card className="relative z-10 overflow-hidden rounded-2xl border border-border bg-card/80 shadow-[0_4px_22px_rgba(0,0,0,0.07)] backdrop-blur-xl lg:col-span-2">
+             <Card className="relative z-10 overflow-hidden rounded-2xl border border-border bg-card/80 shadow-[0_4px_22px_rgba(0,0,0,0.07)] backdrop-blur-xl">
               <CardHeader>
                 <CardTitle>Authenticated Crawling</CardTitle>
                 <CardDescription>Log in before crawling to access protected pages.</CardDescription>
@@ -877,6 +925,108 @@ export default function CrawlerNewPage() {
                 )}
               </CardContent>
             </Card>
+             <Card className="relative z-10 overflow-hidden rounded-2xl border border-border bg-card/80 shadow-[0_4px_22px_rgba(0,0,0,0.07)] backdrop-blur-xl">
+               <CardHeader>
+                 <CardTitle>Proxy / PAC Network Access</CardTitle>
+                 <CardDescription>
+                   Reach stage, pre-production, and other intermediate environments through a corporate proxy.
+                 </CardDescription>
+               </CardHeader>
+               <CardContent className="space-y-4">
+                 <div className="flex items-center justify-between gap-4">
+                   <div>
+                     <Label className="flex items-center gap-1">
+                       Enable Proxy / PAC
+                       <OptionHelp text="Routes both Phase 1 URL discovery and Phase 2 accessibility scanning through this proxy or PAC file." />
+                     </Label>
+                     <p className="text-xs text-muted-foreground">Use the same network route for crawling and scanning</p>
+                   </div>
+                   <Switch
+                     checked={values.proxyEnabled}
+                     onCheckedChange={(value) => {
+                       setValue("proxyEnabled", value, { shouldValidate: true });
+                       if (!value) clearErrors("proxyPacUrl");
+                       if (value && !getValues("proxyPacUrl")) {
+                         const activeProxy = getActiveProxy();
+                         setValue(
+                           "proxyPacUrl",
+                           savedProxies.includes(activeProxy) ? activeProxy : (savedProxies[0] ?? ""),
+                           { shouldValidate: true },
+                         );
+                       }
+                     }}
+                     aria-label="Enable proxy or PAC for this crawler"
+                   />
+                 </div>
+
+                 {values.proxyEnabled && (
+                   <div className="space-y-2 border-l-2 border-border pl-4">
+                     <div className="flex items-center justify-between gap-3">
+                       <Label htmlFor="proxyPacUrl">Saved proxy *</Label>
+                       <Button
+                         type="button"
+                         variant="ghost"
+                         size="sm"
+                         className="h-7 px-2 text-xs text-muted-foreground"
+                         onClick={() => window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT))}
+                       >
+                         Configure in Settings
+                       </Button>
+                     </div>
+                     <input
+                       type="hidden"
+                       {...register("proxyPacUrl", {
+                         validate: (value) =>
+                           !values.proxyEnabled || Boolean(value.trim()) || "Select a saved proxy",
+                       })}
+                     />
+                     {savedProxies.length > 0 ? (
+                       <Select
+                         value={values.proxyPacUrl || undefined}
+                         onValueChange={(value) =>
+                           setValue("proxyPacUrl", value, { shouldValidate: true })
+                         }
+                       >
+                         <SelectTrigger id="proxyPacUrl" aria-describedby="proxyPacUrl-help">
+                           <SelectValue placeholder="Select a saved proxy" />
+                         </SelectTrigger>
+                         <SelectContent>
+                           {savedProxies.map((proxyUrl) => (
+                             <SelectItem key={proxyUrl} value={proxyUrl}>
+                               <span className="block max-w-[30rem] truncate font-mono text-xs">
+                                 {proxyUrl}
+                               </span>
+                             </SelectItem>
+                           ))}
+                         </SelectContent>
+                       </Select>
+                     ) : (
+                       <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+                         <AlertTriangle className="h-4 w-4 shrink-0" />
+                         <span className="flex-1">No proxies are saved. Add one in Settings before starting this crawl.</span>
+                         <Button
+                           type="button"
+                           variant="outline"
+                           size="sm"
+                           className="h-7 shrink-0 text-xs"
+                           onClick={() => window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT))}
+                         >
+                           Open Settings
+                         </Button>
+                       </div>
+                     )}
+                     <p id="proxyPacUrl-help" className="text-xs text-muted-foreground">
+                       Loaded from Settings. The selected proxy is saved with this crawl and reused if it is paused or resumed.
+                     </p>
+                     {errors.proxyPacUrl && <p className="text-xs text-destructive">{errors.proxyPacUrl.message}</p>}
+                     <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300">
+                       <Shield className="mt-0.5 h-4 w-4 shrink-0" />
+                       The proxy applies to both discovery and accessibility scanning. Avoid placing reusable passwords or secrets directly in the URL.
+                     </div>
+                   </div>
+                 )}
+               </CardContent>
+             </Card>
           </TabsContent>
 
           {/* PERFORMANCE */}

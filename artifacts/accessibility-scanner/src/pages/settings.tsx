@@ -65,6 +65,7 @@ export function isHtmlReplayEnabled(): boolean {
 export const PROXY_LS_KEY = "a11y-scanner-proxy-pacs";
 export const ACTIVE_PROXY_KEY = "a11y-scanner-active-proxy";
 export const ACTIVE_PROXY_CHANGED_EVENT = "a11y-active-proxy-changed";
+export const PROXY_LIST_CHANGED_EVENT = "a11y-proxy-list-changed";
 
 export function setActiveProxyValue(url: string): void {
   if (url) {
@@ -980,6 +981,7 @@ export default function Settings() {
     const existing = loadSavedProxies().filter((p) => p !== url);
     const updated = [url, ...existing].slice(0, 8);
     localStorage.setItem(PROXY_LS_KEY, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent(PROXY_LIST_CHANGED_EVENT));
     setSavedProxies(updated);
     if (!activeProxy) {
       setActiveProxyValue(url);
@@ -1007,6 +1009,7 @@ export default function Settings() {
   const removeProxy = (url: string) => {
     const remaining = loadSavedProxies().filter((p) => p !== url);
     localStorage.setItem(PROXY_LS_KEY, JSON.stringify(remaining));
+    window.dispatchEvent(new CustomEvent(PROXY_LIST_CHANGED_EVENT));
     setSavedProxies(remaining);
     if (activeProxy === url) {
       setActiveProxyValue("");

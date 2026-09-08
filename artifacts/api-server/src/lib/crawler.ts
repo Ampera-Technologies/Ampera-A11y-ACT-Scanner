@@ -102,6 +102,15 @@ const CRAWLER_LAUNCH_ARGS = [
   "--hide-scrollbars",
 ];
 
+export function getCrawlerProxyLaunchArg(proxyUrl: string): string {
+  const parsed = new URL(proxyUrl);
+  const directProxy =
+    parsed.protocol === "socks4:" ||
+    parsed.protocol === "socks5:" ||
+    ((parsed.protocol === "http:" || parsed.protocol === "https:") && Boolean(parsed.port));
+  return `${directProxy ? "--proxy-server" : "--proxy-pac-url"}=${proxyUrl}`;
+}
+
 function getDiscoveryChromiumPath(): string | undefined {
   if (process.env["PUPPETEER_EXECUTABLE_PATH"]) {
     const p = process.env["PUPPETEER_EXECUTABLE_PATH"];
@@ -117,7 +126,7 @@ function getDiscoveryChromiumPath(): string | undefined {
   return undefined;
 }
 
-async function launchDiscoveryBrowser(workerId: number): Promise<Browser> {
+async function launchDiscoveryBrowser(workerId: number, proxyPacUrl?: string): Promise<Browser> {
   // Each parallel discovery worker gets its own userDataDir so multiple Chrome
   // instances can run concurrently without hitting "The browser is already
   // running for <userDataDir>".  Worker 1 keeps the legacy unsuffixed path for
@@ -144,7 +153,9 @@ async function launchDiscoveryBrowser(workerId: number): Promise<Browser> {
     // Per-worker persistent profile so Cloudflare clearance cookies survive
     // across pages within a session (and partly across sessions).
     userDataDir: profileDir,
-    args: CRAWLER_LAUNCH_ARGS,
+    args: proxyPacUrl
+      ? [...CRAWLER_LAUNCH_ARGS, getCrawlerProxyLaunchArg(proxyPacUrl)]
+      : CRAWLER_LAUNCH_ARGS,
     // Discovery also retries slow navigation and evaluates large rendered
     // documents; keep CDP calls from expiring while the page is settling.
     protocolTimeout: 180_000,
@@ -370,6 +381,8 @@ export interface CrawlerConfig {
    * Capped at 4 on a single instance; default 2.
    */
   discoveryWorkers?: number;
+  /** Optional direct proxy or PAC URL applied to both crawler phases. */
+  proxyPacUrl?: string;
   /** Persisted Siteimprove-style URL policy snapshot for this crawl. */
   contentRules?: Array<{
     id?: number;
@@ -798,7 +811,7 @@ async function runDiscoveryWorker(
 ): Promise<void> {
   let discoveryBrowser: Browser | null = null;
   try {
-    discoveryBrowser = await launchDiscoveryBrowser(workerId);
+    discoveryBrowser = await launchDiscoveryBrowser(workerId, config.proxyPacUrl);
     logger.info({ sessionId, workerId }, "Discovery worker started");
 
     while (!controller.signal.aborted) {
@@ -1118,6 +1131,7 @@ async function runScanPhase(
           timeout: 30_000,
           scanDelayMs: config.scanDelayMs,
           rules: config.rules,
+          proxyPacUrl: config.proxyPacUrl,
           signal: controller.signal,
           onStage: undefined,
           // Crawl Boost: reuse HTML captured in Phase 1 to skip re-navigation
