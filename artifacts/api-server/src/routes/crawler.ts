@@ -236,6 +236,19 @@ function validateCreateCrawler(body: any): { data: any; error?: string } {
       return { data: null, error: "proxyPacUrl must be a valid proxy or PAC URL" };
     }
   }
+  let localePatterns: string[] | undefined;
+  if (body.localePatterns != null) {
+    if (!Array.isArray(body.localePatterns) || body.localePatterns.length > 20) {
+      return { data: null, error: "localePatterns must contain no more than 20 path filters" };
+    }
+    if (body.localePatterns.some((pattern: unknown) => typeof pattern !== "string" || pattern.trim().length > 500)) {
+      return { data: null, error: "Each path filter must be a string of 500 characters or fewer" };
+    }
+    const normalized = Array.from(
+      new Set(body.localePatterns.map((pattern: string) => pattern.trim()).filter(Boolean)),
+    );
+    localePatterns = normalized.length > 0 ? normalized : undefined;
+  }
   return {
     data: {
       seedUrl: body.seedUrl.trim(),
@@ -272,6 +285,7 @@ function validateCreateCrawler(body: any): { data: any; error?: string } {
       siteId: typeof body.siteId === "number" ? body.siteId : undefined,
       groupId: typeof body.groupId === "number" ? body.groupId : undefined,
       localePattern: typeof body.localePattern === "string" && body.localePattern.trim() ? body.localePattern.trim() : undefined,
+      localePatterns,
       timezone: typeof body.timezone === "string" && body.timezone.trim() ? body.timezone.trim() : undefined,
       initiatorName: body.initiatorName,
       initiatorRole: body.initiatorRole,
@@ -386,6 +400,7 @@ router.post("/crawler/sessions", requireAuth, async (req: Request, res: Response
     siteId: data.siteId,
     groupId: data.groupId,
     localePattern: data.localePattern,
+    localePatterns: data.localePatterns,
     timezone: sitePolicy?.timezone ?? data.timezone,
     initiatorName: data.initiatorName,
     initiatorRole: data.initiatorRole,

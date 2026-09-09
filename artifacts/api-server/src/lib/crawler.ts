@@ -361,6 +361,7 @@ export interface CrawlerConfig {
   siteId?: number;
   groupId?: number;
   localePattern?: string;
+  localePatterns?: string[];
   timezone?: string;
   initiatorName?: string;
   initiatorRole?: string;
@@ -685,6 +686,20 @@ function matchesContentRule(url: string, rule: NonNullable<CrawlerConfig["conten
   return url.includes(pattern);
 }
 
+export function matchesCrawlerPathFilters(
+  pathname: string,
+  localePatterns?: string[],
+  legacyLocalePattern?: string,
+): boolean {
+  const patterns =
+    localePatterns?.length
+      ? localePatterns
+      : legacyLocalePattern
+        ? [legacyLocalePattern]
+        : [];
+  return patterns.length === 0 || patterns.some((pattern) => pathname.includes(pattern));
+}
+
 function evaluateUrlPolicy(
   url: string,
   seedDomain: string,
@@ -716,10 +731,10 @@ function evaluateUrlPolicy(
   if (robotsRules && isBlockedByRobots(url, robotsRules)) {
     return { allowed: false, disposition: "skipped", reason: "Blocked by robots.txt" };
   }
-  if (config.localePattern) {
+  if (config.localePatterns?.length || config.localePattern) {
     try {
-      if (!new URL(url).pathname.includes(config.localePattern)) {
-        return { allowed: false, disposition: "skipped", reason: "Outside locale pattern" };
+      if (!matchesCrawlerPathFilters(new URL(url).pathname, config.localePatterns, config.localePattern)) {
+        return { allowed: false, disposition: "skipped", reason: "Outside path filters" };
       }
     } catch {
       return { allowed: false, disposition: "excluded", reason: "Invalid URL" };
@@ -1450,7 +1465,9 @@ export async function startCrawlerJob(sessionId: number): Promise<void> {
       if (!norm) return;
       // For explicit seed URLs, bypass locale filter — user chose them intentionally.
       // Locale filter applies only to links discovered during crawl.
-      const checkConfig = skipLocale ? { ...config, localePattern: undefined } : config;
+      const checkConfig = skipLocale
+        ? { ...config, localePattern: undefined, localePatterns: undefined }
+        : config;
       const decision = evaluateUrlPolicy(norm, seedDomain, seedPath, robotsRules, checkConfig);
       void recordUrlEvent(sessionId, norm, decision, from ?? undefined);
       if (!decision.allowed) return;

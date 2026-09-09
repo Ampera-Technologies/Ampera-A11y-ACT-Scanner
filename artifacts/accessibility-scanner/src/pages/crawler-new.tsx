@@ -30,7 +30,7 @@ import {
   loadSavedProxies,
 } from "@/pages/settings";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Globe, Map, Link2, Shield, Zap, RefreshCw, RotateCcw, Upload, AlertTriangle, Building2, Users, Clock, Database, CheckCircle2, Info } from "lucide-react";
+import { Globe, Map, Link2, Shield, Zap, RefreshCw, RotateCcw, Upload, AlertTriangle, Building2, Users, Clock, Database, CheckCircle2, Info, Plus, Trash2 } from "lucide-react";
 import { ScanLevelSelector } from "@/components/ScanLevelSelector";
 import { ALL_SCAN_LEVELS } from "@/lib/scanLevels";
 
@@ -113,7 +113,7 @@ interface FormValues {
   timezone: string;
   sitemapUrl: string;
   localeEnabled: boolean;
-  localePattern: string;
+  localePatterns: string[];
   maxPages: number;
   maxDepth: number;
   respectRobotsTxt: boolean;
@@ -184,7 +184,7 @@ export default function CrawlerNewPage() {
       timezone: defaultTz,
       sitemapUrl: "",
       localeEnabled: false,
-      localePattern: "",
+      localePatterns: [""],
       maxPages: 2000,
       maxDepth: 5,
       respectRobotsTxt: true,
@@ -341,7 +341,20 @@ export default function CrawlerNewPage() {
        }
        scheduledStartAt = scheduledDate.toISOString();
      }
-     const payload: any = {
+    const localePatterns = Array.from(
+      new Set(data.localePatterns.map((pattern) => pattern.trim()).filter(Boolean)),
+    );
+    if (data.localeEnabled && localePatterns.length === 0) {
+      setActiveTab("discovery");
+      toast({
+        title: "Add a path filter",
+        description: "Enter at least one locale or path string, or turn the filter off.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const payload: any = {
       seedUrl: data.seedUrl.trim(),
       maxPages: data.maxPages,
       maxDepth: data.maxDepth,
@@ -366,7 +379,11 @@ export default function CrawlerNewPage() {
     };
     if (data.siteId) payload.siteId = parseInt(data.siteId, 10);
     if (data.groupId) payload.groupId = parseInt(data.groupId, 10);
-    if (data.localeEnabled && data.localePattern.trim()) payload.localePattern = data.localePattern.trim();
+    if (data.localeEnabled) {
+      payload.localePatterns = localePatterns;
+      // Keep the legacy field during mixed-version deployments.
+      payload.localePattern = localePatterns[0];
+    }
     if (data.useSitemap && data.sitemapUrl) payload.sitemapUrl = data.sitemapUrl.trim();
     if (data.authenticated) {
       payload.authUrl = data.authUrl.trim();
@@ -774,16 +791,54 @@ export default function CrawlerNewPage() {
                   />
                 </div>
                 {values.localeEnabled && (
-                  <div className="space-y-1.5 ml-4 border-l-2 border-border pl-4">
-                    <Input
-                      id="localePattern"
-                      placeholder="e.g. /us/en or /en-us"
-                      aria-label="Locale or path filter pattern"
-                      {...register("localePattern")}
-                    />
+                  <div className="ml-4 space-y-3 border-l-2 border-border pl-4">
+                    <div className="space-y-2">
+                      {values.localePatterns.map((_, index) => (
+                        <div key={index} className="flex items-center gap-2">
+                          <Input
+                            id={`localePattern-${index}`}
+                            placeholder={index === 0 ? "e.g. /us/en" : "e.g. /products or /support"}
+                            aria-label={`Locale or path filter ${index + 1}`}
+                            data-testid={`input-path-filter-${index}`}
+                            {...register(`localePatterns.${index}`)}
+                          />
+                          {values.localePatterns.length > 1 && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 shrink-0 text-muted-foreground hover:text-destructive"
+                              aria-label={`Remove path filter ${index + 1}`}
+                              data-testid={`button-remove-path-filter-${index}`}
+                              onClick={() => {
+                                const next = values.localePatterns.filter((_, itemIndex) => itemIndex !== index);
+                                setValue("localePatterns", next, { shouldDirty: true });
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      data-testid="button-add-path-filter"
+                      disabled={values.localePatterns.length >= 20}
+                      onClick={() =>
+                        setValue("localePatterns", [...values.localePatterns, ""], { shouldDirty: true })
+                      }
+                    >
+                      <Plus className="mr-1.5 h-3.5 w-3.5" />
+                      Add another path
+                    </Button>
                     <p className="text-xs text-muted-foreground">
-                      Only crawl URLs whose path contains this string.
-                      Example: <code className="font-mono bg-muted px-1 rounded">/us/en</code> restricts crawling to the US English locale.
+                      A discovered URL is crawled when its path contains any one of these strings.
+                      For example, <code className="rounded bg-muted px-1 font-mono">/us/en</code> and{" "}
+                      <code className="rounded bg-muted px-1 font-mono">/en-us</code> include both locale paths.
                     </p>
                   </div>
                 )}
