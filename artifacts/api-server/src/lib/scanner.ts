@@ -1343,6 +1343,12 @@ function clearChromeLocks(): void {
   }
 }
 
+// This process has no live scanner browsers during module initialization, so
+// stale profile locks can be removed safely here. Never sweep the shared profile
+// root during a later worker launch: another pool slot may be actively using
+// one of its session directories.
+clearChromeLocks();
+
 const PUPPETEER_LAUNCH_ARGS = [
   "--no-sandbox",
   "--disable-setuid-sandbox",
@@ -1409,9 +1415,6 @@ async function getBrowser(slot: BrowserSlot): Promise<Browser> {
     return slot.browser;
   }
 
-  // Clear any stale lock files left by a crashed previous process
-  clearChromeLocks();
-
   const executablePath = getChromiumPath();
   logger.info(
     {
@@ -1424,10 +1427,6 @@ async function getBrowser(slot: BrowserSlot): Promise<Browser> {
   const launchOptions = {
     headless: true as const,
     executablePath,
-    userDataDir: path.join(
-      CHROME_PROFILE_DIR,
-      `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    ),
     args: PUPPETEER_LAUNCH_ARGS,
     // Cap how long Puppeteer waits for any single Chrome DevTools Protocol
     // message.  Without this the default (180 s) allows a stuck page.goto()
@@ -1460,8 +1459,12 @@ async function getBrowser(slot: BrowserSlot): Promise<Browser> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_LAUNCH_RETRIES; attempt++) {
     try {
+      const userDataDir = path.join(
+        CHROME_PROFILE_DIR,
+        `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      );
       const launched = await Promise.race([
-        puppeteerExtra.launch(launchOptions) as Promise<Browser>,
+        puppeteerExtra.launch({ ...launchOptions, userDataDir }) as Promise<Browser>,
         new Promise<never>((_, reject) =>
           setTimeout(
             () =>
@@ -1490,7 +1493,6 @@ async function getBrowser(slot: BrowserSlot): Promise<Browser> {
       lastErr = err;
       const msg = err instanceof Error ? err.message : String(err);
 
-      // Profile lock errors — clear locks before retrying
       if (
         msg.includes("SingletonLock") ||
         msg.includes("profile") ||
@@ -1499,9 +1501,8 @@ async function getBrowser(slot: BrowserSlot): Promise<Browser> {
       ) {
         logger.warn(
           { error: msg, attempt },
-          "Browser launch failed with profile lock — clearing",
+          "Browser launch failed with profile lock — retrying with a fresh profile",
         );
-        clearChromeLocks();
       } else {
         logger.warn(
           { error: msg, attempt, maxAttempts: MAX_LAUNCH_RETRIES },

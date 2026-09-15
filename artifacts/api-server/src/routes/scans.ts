@@ -2943,7 +2943,7 @@ router.get("/scans/:id/report", async (req, res): Promise<void> => {
 
   const [statusRows, denominatorResult, carryResult, potentialResult] = await Promise.all([
     pool.query<{ rule_id: string; status: "not-selected" | "not-applicable" | "executed" | "failed"; execution_tier: "automatic" | "manual" }>(
-      `SELECT rule_id, status, execution_tier
+      `SELECT rs.rule_id, rs.status, rs.execution_tier
          FROM rule_execution_statuses rs
          JOIN page_results pr ON pr.id = rs.page_result_id
         WHERE pr.scan_id = $1`,
