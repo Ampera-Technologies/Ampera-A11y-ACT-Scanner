@@ -239,7 +239,10 @@ export function runNamesRules(results: ScanRawResult[], pushStat: PushStatFn): v
     if (!isAlfaFocusable(el) || !isIncludedInAccessibilityTree(el)) return;
     const role = getEffectiveAriaRole(el);
     if (!["button","checkbox","combobox","link","listbox","menuitem","menuitemcheckbox","menuitemradio","option","radio","searchbox","slider","spinbutton","switch","tab","textbox","treeitem"].includes(role)) return;
-    const rawVisible = (el instanceof HTMLElement ? el.innerText?.replace(/\s+/g, " ")?.trim() : "") || "";
+    // Prefer an existing aria-labelledby target for every applicable control.
+    // Otherwise getVisibleLabel falls back to its associated HTML label,
+    // placeholder, or visible text.
+    const rawVisible = getVisibleLabel(el).replace(/\s+/g, " ").trim();
     if (!rawVisible || rawVisible.length < 2) return;
     const visibleText = (() => {
       const words = rawVisible.split(" ");

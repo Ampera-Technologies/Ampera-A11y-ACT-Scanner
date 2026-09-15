@@ -166,6 +166,22 @@ export function getAccessibleName(el: Element, visited: WeakSet<Element> = new W
 
 // ─── HELPER: getVisibleLabel (form field visible label) ──────────────────────
 export function getVisibleLabel(el: Element): string {
+  // For Label in Name checks, an existing aria-labelledby target is the
+  // authoritative label source. Only fall back when no referenced target
+  // exists or all referenced targets are empty.
+  const labelledBy = el.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const referencedText = labelledBy
+      .trim()
+      .split(/\s+/)
+      .map((id) => document.getElementById(id)?.textContent?.trim() || "")
+      .filter(Boolean)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (referencedText) return referencedText;
+  }
+
   if (
     el instanceof HTMLInputElement ||
     el instanceof HTMLSelectElement ||
@@ -184,6 +200,7 @@ export function getVisibleLabel(el: Element): string {
     if (el instanceof HTMLInputElement && el.placeholder) return el.placeholder;
     if (el instanceof HTMLTextAreaElement && el.placeholder) return el.placeholder;
   }
+
   return el.textContent?.trim() || "";
 }
 
