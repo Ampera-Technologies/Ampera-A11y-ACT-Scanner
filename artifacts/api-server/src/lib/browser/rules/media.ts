@@ -20,6 +20,17 @@ export function classifyR37Candidate(
   return "Potential Issue";
 }
 
+export function isSubstantiveMediaReviewText(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length >= 20 && /[A-Za-z0-9]/.test(normalized);
+}
+
+export function isMediaReviewLabel(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length < 3 || !/[A-Za-z0-9]/.test(normalized)) return false;
+  return !/^(?:play\s+)?(?:this\s+)?(?:video|media)(?:\s+content)?$/i.test(normalized);
+}
+
 export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: boolean, pushStat: PushStatFn): void {
   const getMediaSources = (media: HTMLMediaElement): HTMLSourceElement[] =>
     Array.from(media.querySelectorAll("source"));
@@ -115,6 +126,33 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
     return declaredTrack || textTrack || playerAlternative || hasVisibleAccessibleAlternative(media);
   };
 
+  const hasNearbyMediaReviewText = (video: HTMLVideoElement): boolean => {
+    // Responsive carousels often keep the video's matching copy in a visible
+    // desktop sibling while an equivalent paragraph inside the slide is hidden.
+    // Walk a small, bounded ancestor chain instead of letting `[class*="video"]`
+    // match the <video> element's own class (for example, "subvideo1").
+    let container: HTMLElement | null = video.parentElement;
+    for (let depth = 0; container && depth < 7; depth += 1, container = container.parentElement) {
+      const hasCandidate = Array.from(container.querySelectorAll("p,figcaption"))
+        .filter((candidate) =>
+          !candidate.contains(video) &&
+          isVisible(candidate) &&
+          !isProgrammaticallyHidden(candidate)
+        )
+        .some((candidate) =>
+          isSubstantiveMediaReviewText(
+            getAccessibleName(candidate).trim() || (candidate.textContent || "").trim(),
+          )
+        );
+      if (hasCandidate) return true;
+      if (container.matches("main,body")) break;
+    }
+    return false;
+  };
+
+  const hasMediaReviewLabel = (video: HTMLVideoElement): boolean =>
+    isMediaReviewLabel(getAccessibleName(video).trim());
+
   const isApplicableVideo = (video: HTMLVideoElement): boolean => {
     if (isProgrammaticallyHidden(video) || !isVisible(video)) return false;
     const rect = video.getBoundingClientRect();
@@ -199,16 +237,16 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
     }
   });
 
-  // ACT-R33: The presence of a caption, transcript, description, or other
-  // declared media alternative does not prove that it conveys every meaningful
-  // part of the recording. Emit one Potential Issue per applicable media
-  // element with a concrete alternative so a reviewer can compare the content.
-  document.querySelectorAll("video, audio").forEach((media) => {
-    if (!(media instanceof HTMLMediaElement)) return;
-    const applicable = media instanceof HTMLVideoElement
-      ? isApplicableVideo(media)
-      : media instanceof HTMLAudioElement && isApplicableAudio(media);
-    if (!applicable || !hasDeclaredMediaAlternative(media)) return;
+  // ACT-R33: A declared alternative or substantive nearby text does not prove
+  // that it conveys every meaningful part of the video. Nearby text is also a
+  // review candidate when authors do not explicitly label it as a transcript.
+  document.querySelectorAll("video").forEach((media) => {
+    if (!(media instanceof HTMLVideoElement) || !isApplicableVideo(media)) return;
+    if (
+      !hasDeclaredMediaAlternative(media) &&
+      !hasMediaReviewLabel(media) &&
+      !hasNearbyMediaReviewText(media)
+    ) return;
     results.push({
       ruleId: "ACT-R33",
       type: "Potential Issue",
