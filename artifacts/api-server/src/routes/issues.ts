@@ -796,6 +796,45 @@ router.patch("/issues/:issueId/comments/:commentId", requireAuth, async (req, re
   res.json(updatedComment);
 });
 
+router.delete("/issues/:issueId/comments/:commentId", requireAuth, async (req, res) => {
+  if (!(await requireIssuePermission(req, res, "canCommentIssue"))) return;
+  const issueId = Number(req.params.issueId);
+  const commentId = Number(req.params.commentId);
+  const issue = await canSeeIssue(req, issueId);
+  if (!issue || !Number.isInteger(commentId)) {
+    res.status(404).json({ error: "Comment not found" });
+    return;
+  }
+
+  const [comment] = await db.select(issueCommentColumns).from(appIssueCommentsTable).where(and(
+    eq(appIssueCommentsTable.id, commentId),
+    eq(appIssueCommentsTable.issueId, issue.id),
+  ));
+  if (!comment) {
+    res.status(404).json({ error: "Comment not found" });
+    return;
+  }
+
+  const userId = Number(req.session!.user!.id);
+  if (comment.authorId !== userId) {
+    res.status(403).json({ error: "You can only delete your own comments" });
+    return;
+  }
+
+  const updatedAt = new Date();
+  await db.delete(appIssueCommentsTable).where(eq(appIssueCommentsTable.id, comment.id));
+  await Promise.all([
+    db.update(appIssuesTable).set({ updatedAt }).where(eq(appIssuesTable.id, issue.id)),
+    db.insert(appIssueActivityTable).values({
+      issueId: issue.id,
+      actorId: userId,
+      action: "deleted a comment",
+      details: { commentId: comment.id },
+    }),
+  ]);
+  res.status(204).send();
+});
+
 router.delete("/issues/:id", requireAuth, async (req, res) => {
   if (req.session!.user!.role !== "super_admin" && !(await requireIssuePermission(req, res, "canManageIssues"))) return;
   const issue = await canSeeIssue(req, Number(req.params.id));

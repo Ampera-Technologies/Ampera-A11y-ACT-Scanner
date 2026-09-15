@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { Loader2, Archive, Link2, X, Pencil, RotateCcw, Save, Maximize2, ChevronDown, MessageSquareText, History } from "lucide-react";
+import { Loader2, Archive, Link2, X, Pencil, RotateCcw, Save, Maximize2, ChevronDown, MessageSquareText, History, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { useIssue, useUpdateIssue, useAddComment, useUpdateComment, useArchiveIssue, useRestoreIssue, useAddIssueLink, useRemoveIssueLink, uploadIssueAttachment } from "../../hooks/use-issues";
+import { useIssue, useUpdateIssue, useAddComment, useUpdateComment, useDeleteComment, useArchiveIssue, useRestoreIssue, useAddIssueLink, useRemoveIssueLink, uploadIssueAttachment } from "../../hooks/use-issues";
 import { getStatusTransitions, STATUS_LABELS, STATUS_COLORS, TYPE_COLORS, Person, Issue, ISSUE_LINK_LABELS, ISSUE_LINK_TYPES, IssueLinkType } from "../../lib/issue-types";
 import { RichTextEditor } from "./rich-text-editor";
 import { AttachmentControl, AttachmentPreview } from "./attachment-control";
@@ -33,6 +33,7 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
   const updateIssue = useUpdateIssue(id);
   const addComment = useAddComment(id);
   const updateComment = useUpdateComment(id);
+  const deleteComment = useDeleteComment(id);
   const archiveIssue = useArchiveIssue();
   const restoreIssue = useRestoreIssue();
   const addIssueLink = useAddIssueLink(id);
@@ -45,6 +46,7 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
   const [editingCommentBody, setEditingCommentBody] = useState("");
   const [descriptionDialogOpen, setDescriptionDialogOpen] = useState(false);
   const [commentDialogOpen, setCommentDialogOpen] = useState(false);
+  const [editCommentDialogOpen, setEditCommentDialogOpen] = useState(false);
   const [commentsDialogOpen, setCommentsDialogOpen] = useState(false);
   const [issuePopoutOpen, setIssuePopoutOpen] = useState(false);
   const [activityPanelOpen, setActivityPanelOpen] = useState(true);
@@ -147,6 +149,7 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
         onSuccess: () => {
           setEditingCommentId(null);
           setEditingCommentBody("");
+          setEditCommentDialogOpen(false);
           toast({ title: "Comment updated" });
         },
         onError: (error) => {
@@ -158,6 +161,33 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
         },
       },
     );
+  };
+
+  const openCommentEditor = (commentId: number, body: string) => {
+    setEditingCommentId(commentId);
+    setEditingCommentBody(body);
+    setEditCommentDialogOpen(true);
+  };
+
+  const handleDeleteComment = (commentId: number) => {
+    if (deleteComment.isPending) return;
+    if (!window.confirm("Delete this comment? This cannot be undone.")) return;
+    deleteComment.mutate(commentId, {
+      onSuccess: () => {
+        if (editingCommentId === commentId) {
+          setEditingCommentId(null);
+          setEditingCommentBody("");
+        }
+        toast({ title: "Comment deleted" });
+      },
+      onError: (error) => {
+        toast({
+          title: "Couldn't delete comment",
+          description: error.message,
+          variant: "destructive",
+        });
+      },
+    });
   };
 
   const handleArchive = async () => {
@@ -641,38 +671,36 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
                                         {new Date(comment.createdAt).toLocaleString()}
                                         {comment.updatedAt && new Date(comment.updatedAt).getTime() > new Date(comment.createdAt).getTime() + 1000 ? " (edited)" : ""}
                                       </span>
-                                      {canComment && currentUserId === comment.authorId && editingCommentId !== comment.id && (
-                                        <Button
-                                          type="button"
-                                          variant="ghost"
-                                          size="sm"
-                                          className="h-7 px-2 text-xs"
-                                          onClick={() => {
-                                            setEditingCommentId(comment.id);
-                                            setEditingCommentBody(comment.body);
-                                          }}
-                                          aria-label={`Edit comment by ${comment.authorName}`}
-                                        >
-                                          <Pencil className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
-                                          Edit
-                                        </Button>
+                                      {canComment && currentUserId === comment.authorId && (
+                                        <>
+                                          <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-7 px-2 text-xs"
+                                            onClick={() => openCommentEditor(comment.id, comment.body)}
+                                            aria-label={`Edit comment by ${comment.authorName}`}
+                                          >
+                                            <Pencil className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                                            Edit
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                                            disabled={deleteComment.isPending}
+                                            onClick={() => handleDeleteComment(comment.id)}
+                                            aria-label={`Delete comment by ${comment.authorName}`}
+                                          >
+                                            <Trash2 className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                                            Delete
+                                          </Button>
+                                        </>
                                       )}
                                     </div>
                                   </div>
-                                  {editingCommentId === comment.id ? (
-                                    <div className="rounded-lg border bg-muted/10 p-3">
-                                      <RichTextEditor value={editingCommentBody} onChange={setEditingCommentBody} placeholder="Edit your comment..." people={people} />
-                                      <div className="mt-3 flex justify-end gap-2">
-                                        <Button type="button" variant="outline" size="sm" disabled={updateComment.isPending} onClick={() => { setEditingCommentId(null); setEditingCommentBody(""); }}>Cancel</Button>
-                                        <Button type="button" size="sm" disabled={!editingCommentBody.trim() || updateComment.isPending} onClick={saveEditedComment}>
-                                          {updateComment.isPending ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Save className="mr-1 h-3.5 w-3.5" aria-hidden="true" />}
-                                          Save
-                                        </Button>
-                                      </div>
-                                    </div>
-                                  ) : (
-                                    <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 bg-muted/20 p-3 rounded-lg border" dangerouslySetInnerHTML={{ __html: sanitizeIssueHtml(comment.body) }} />
-                                  )}
+                                  <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 bg-muted/20 p-3 rounded-lg border" dangerouslySetInnerHTML={{ __html: sanitizeIssueHtml(comment.body) }} />
                                   {comment.attachments && comment.attachments.length > 0 && (
                                     <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
                                       {comment.attachments.map(att => <AttachmentPreview key={att.id || att.objectPath} attachment={att} issueId={issue.id} />)}
@@ -901,6 +929,49 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={editCommentDialogOpen}
+        onOpenChange={(open) => {
+          setEditCommentDialogOpen(open);
+          if (!open && !updateComment.isPending) {
+            setEditingCommentId(null);
+            setEditingCommentBody("");
+          }
+        }}
+      >
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit comment</DialogTitle>
+            <DialogDescription>Update your comment. The issue activity log will record the edit.</DialogDescription>
+          </DialogHeader>
+          <RichTextEditor
+            value={editingCommentBody}
+            onChange={setEditingCommentBody}
+            placeholder="Edit your comment..."
+            people={people}
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={updateComment.isPending}
+              onClick={() => setEditCommentDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              data-testid="button-save-edited-comment"
+              type="button"
+              disabled={editingCommentId === null || !editingCommentBody.trim() || updateComment.isPending}
+              onClick={saveEditedComment}
+            >
+              {updateComment.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+              Save changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={commentsDialogOpen} onOpenChange={setCommentsDialogOpen}>
         <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col overflow-hidden">
           <DialogHeader>
@@ -920,10 +991,39 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
                     <div className="min-w-0 flex-1">
                       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                         <span className="text-sm font-semibold">{comment.authorName}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {new Date(comment.createdAt).toLocaleString()}
-                          {comment.updatedAt && new Date(comment.updatedAt).getTime() > new Date(comment.createdAt).getTime() + 1000 ? " (edited)" : ""}
-                        </span>
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(comment.createdAt).toLocaleString()}
+                            {comment.updatedAt && new Date(comment.updatedAt).getTime() > new Date(comment.createdAt).getTime() + 1000 ? " (edited)" : ""}
+                          </span>
+                          {canComment && currentUserId === comment.authorId && (
+                            <>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => openCommentEditor(comment.id, comment.body)}
+                                aria-label={`Edit comment by ${comment.authorName}`}
+                              >
+                                <Pencil className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                                Edit
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                                disabled={deleteComment.isPending}
+                                onClick={() => handleDeleteComment(comment.id)}
+                                aria-label={`Delete comment by ${comment.authorName}`}
+                              >
+                                <Trash2 className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                                Delete
+                              </Button>
+                            </>
+                          )}
+                        </div>
                       </div>
                       <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg border bg-muted/20 p-3 text-foreground/90" dangerouslySetInnerHTML={{ __html: sanitizeIssueHtml(comment.body) }} />
                       {comment.attachments && comment.attachments.length > 0 && (

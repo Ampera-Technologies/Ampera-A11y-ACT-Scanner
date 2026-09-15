@@ -166,6 +166,20 @@ export function useUpdateComment(id: number) {
   });
 }
 
+export function useDeleteComment(id: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (commentId: number) =>
+      api<void>(`/api/issues/${id}/comments/${commentId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["issues", id] });
+      qc.invalidateQueries({ queryKey: ["issues"] });
+    },
+  });
+}
+
 export function useArchiveIssue() {
   const qc = useQueryClient();
   return useMutation({
