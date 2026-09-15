@@ -45,6 +45,7 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
   const [editingCommentBody, setEditingCommentBody] = useState("");
   const [descriptionDialogOpen, setDescriptionDialogOpen] = useState(false);
   const [commentDialogOpen, setCommentDialogOpen] = useState(false);
+  const [commentsDialogOpen, setCommentsDialogOpen] = useState(false);
   const [issuePopoutOpen, setIssuePopoutOpen] = useState(false);
   const [activityPanelOpen, setActivityPanelOpen] = useState(true);
   const [linkType, setLinkType] = useState<IssueLinkType>("relates_to");
@@ -597,16 +598,28 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
                           Activity log ({activity.length})
                         </TabsTrigger>
                       </TabsList>
-                      {canComment && (
+                      <div className="flex items-center gap-2">
                         <Button
-                          data-testid="button-open-comment-editor"
+                          data-testid="button-view-all-comments"
                           type="button"
                           size="sm"
-                          onClick={() => setCommentDialogOpen(true)}
+                          variant="outline"
+                          onClick={() => setCommentsDialogOpen(true)}
                         >
-                          Add comment
+                          <MessageSquareText className="mr-2 h-4 w-4" aria-hidden="true" />
+                          View all
                         </Button>
-                      )}
+                        {canComment && (
+                          <Button
+                            data-testid="button-open-comment-editor"
+                            type="button"
+                            size="sm"
+                            onClick={() => setCommentDialogOpen(true)}
+                          >
+                            Add comment
+                          </Button>
+                        )}
+                      </div>
                     </div>
 
                     <TabsContent value="comments" className="m-0">
@@ -885,6 +898,54 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
               </Button>
             </div>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={commentsDialogOpen} onOpenChange={setCommentsDialogOpen}>
+        <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>All comments for {issue.issueKey}</DialogTitle>
+            <DialogDescription>{comments.length} {comments.length === 1 ? "comment" : "comments"} on {issue.title}</DialogDescription>
+          </DialogHeader>
+          <div data-testid="dialog-issue-comments" className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2">
+            {comments.length === 0 ? (
+              <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">No comments yet.</div>
+            ) : (
+              <div className="space-y-6 py-2">
+                {comments.map((comment) => (
+                  <article key={comment.id} className="flex gap-4">
+                    <div className="mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                      {comment.authorName.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-sm font-semibold">{comment.authorName}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {new Date(comment.createdAt).toLocaleString()}
+                          {comment.updatedAt && new Date(comment.updatedAt).getTime() > new Date(comment.createdAt).getTime() + 1000 ? " (edited)" : ""}
+                        </span>
+                      </div>
+                      <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg border bg-muted/20 p-3 text-foreground/90" dangerouslySetInnerHTML={{ __html: sanitizeIssueHtml(comment.body) }} />
+                      {comment.attachments && comment.attachments.length > 0 && (
+                        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          {comment.attachments.map((attachment) => (
+                            <AttachmentPreview key={attachment.id || attachment.objectPath} attachment={attachment} issueId={issue.id} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+          {canComment && (
+            <DialogFooter>
+              <Button type="button" onClick={() => { setCommentsDialogOpen(false); setCommentDialogOpen(true); }}>
+                Add comment
+              </Button>
+            </DialogFooter>
+          )}
         </DialogContent>
       </Dialog>
 

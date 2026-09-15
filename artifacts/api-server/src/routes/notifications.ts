@@ -51,18 +51,24 @@ router.get("/notifications", requireAuth, async (req, res): Promise<void> => {
        FROM notifications n
        LEFT JOIN notification_reads nr
          ON nr.notification_id = n.id AND nr.user_id = $1
-       WHERE EXISTS (
-         SELECT 1 FROM notification_recipients target
-         WHERE target.notification_id = n.id AND target.user_id = $1
-           AND (n.type <> 'issue' OR $3::boolean = TRUE)
-       )
-       OR (
-         $2::boolean = TRUE
-         AND NOT EXISTS (
-           SELECT 1 FROM notification_recipients any_target
-           WHERE any_target.notification_id = n.id
+       WHERE (
+          EXISTS (
+            SELECT 1 FROM notification_recipients target
+            WHERE target.notification_id = n.id AND target.user_id = $1
+              AND (n.type <> 'issue' OR $3::boolean = TRUE)
          )
+          OR (
+            $2::boolean = TRUE
+            AND NOT EXISTS (
+              SELECT 1 FROM notification_recipients any_target
+              WHERE any_target.notification_id = n.id
+            )
+          )
        )
+        AND NOT EXISTS (
+          SELECT 1 FROM notification_dismissals dismissed
+          WHERE dismissed.notification_id = n.id AND dismissed.user_id = $1
+        )
        ORDER BY n.created_at DESC
        LIMIT 60`,
       [user.id, access.isAdmin, access.canViewIssues],
@@ -164,6 +170,41 @@ router.put("/notifications/:id/read", requireAuth, async (req, res): Promise<voi
     res.json({ ok: true });
   } catch {
     res.status(500).json({ error: "Failed to mark as read" });
+  }
+});
+
+// DELETE /api/notifications/clear-all — dismiss every visible notification for current user
+router.delete("/notifications/clear-all", requireAuth, async (req, res): Promise<void> => {
+  const user = req.session?.user;
+  if (!user) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+  try {
+    const access = await getNotificationAccess(user.id);
+    if (!access) { res.status(403).json({ error: "Account is inactive" }); return; }
+    const result = await pool.query(
+      `INSERT INTO notification_dismissals (notification_id, user_id)
+       SELECT n.id, $1
+       FROM notifications n
+       WHERE (
+         EXISTS (
+           SELECT 1 FROM notification_recipients target
+           WHERE target.notification_id = n.id AND target.user_id = $1
+             AND (n.type <> 'issue' OR $3::boolean = TRUE)
+         )
+         OR (
+           $2::boolean = TRUE
+           AND NOT EXISTS (
+             SELECT 1 FROM notification_recipients any_target
+             WHERE any_target.notification_id = n.id
+           )
+         )
+       )
+       ON CONFLICT DO NOTHING`,
+      [user.id, access.isAdmin, access.canViewIssues],
+    );
+    res.json({ ok: true, cleared: result.rowCount ?? 0 });
+  } catch {
+    res.status(500).json({ error: "Failed to clear notifications" });
   }
 });
 

@@ -51,6 +51,7 @@ import {
   Inbox,
   CheckCheck,
   ScanSearch,
+  Trash2,
 } from "lucide-react";
 import { AccessibilityModeControl } from "@/components/accessibility-mode";
 import { Button } from "@/components/ui/button";
@@ -2579,6 +2580,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // ── Notifications ─────────────────────────────────────────────────
   const [notifs, setNotifs] = useState<AppNotif[]>([]);
   const [notifLoading, setNotifLoading] = useState(false);
+  const [notifClearing, setNotifClearing] = useState(false);
 
   useEffect(() => {
     if (!user) {
@@ -2610,6 +2612,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
       await fetch(`${BASE}/api/notifications/read-all`, { method: "PUT", credentials: "include" });
       setNotifs((prev) => prev.map((n) => ({ ...n, isRead: true })));
     } catch {}
+  }
+
+  async function clearAllNotifications() {
+    if (notifs.length === 0 || notifClearing) return;
+    if (!window.confirm("Clear all notifications from your list? This cannot be undone.")) return;
+    setNotifClearing(true);
+    try {
+      const res = await fetch(`${BASE}/api/notifications/clear-all`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.ok) setNotifs([]);
+    } catch {}
+    setNotifClearing(false);
   }
 
   const unreadNotifs = notifs.filter((n) => !n.isRead);
@@ -3059,14 +3075,27 @@ export function Layout({ children }: { children: React.ReactNode }) {
                         </span>
                       )}
                     </div>
-                    {unreadNotifs.length > 0 && (
-                      <button
-                        onClick={(e) => { e.preventDefault(); markAllRead(); }}
-                        className="flex items-center gap-1 text-[11px] text-primary hover:underline underline-offset-2"
-                        aria-label="Mark all notifications as read"
-                      >
-                        <CheckCheck className="h-3 w-3" /> Mark all read
-                      </button>
+                    {notifs.length > 0 && (
+                      <div className="flex items-center gap-2">
+                        {unreadNotifs.length > 0 && (
+                          <button
+                            onClick={(e) => { e.preventDefault(); markAllRead(); }}
+                            className="flex items-center gap-1 text-[11px] text-primary hover:underline underline-offset-2"
+                            aria-label="Mark all notifications as read"
+                          >
+                            <CheckCheck className="h-3 w-3" /> Mark all read
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => { e.preventDefault(); clearAllNotifications(); }}
+                          disabled={notifClearing}
+                          className="flex items-center gap-1 text-[11px] text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                          aria-label="Clear all notifications"
+                        >
+                          {notifClearing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                          Clear
+                        </button>
+                      </div>
                     )}
                   </div>
 

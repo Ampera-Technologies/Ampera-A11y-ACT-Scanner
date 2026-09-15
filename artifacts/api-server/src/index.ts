@@ -1440,7 +1440,16 @@
         CREATE INDEX IF NOT EXISTS notification_recipients_user_idx
           ON notification_recipients(user_id, notification_id);
       `);
-  
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS notification_dismissals (
+          notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+          user_id         INTEGER NOT NULL REFERENCES users(id)         ON DELETE CASCADE,
+          dismissed_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (notification_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS notification_dismissals_user_idx
+          ON notification_dismissals(user_id, notification_id);
+      `);
       // 48. Expand target_wcag_level CHECK constraint to allow 'All' level
       await client.query(`
         DO $$
