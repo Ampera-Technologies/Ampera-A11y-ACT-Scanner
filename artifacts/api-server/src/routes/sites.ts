@@ -18,6 +18,7 @@ import { eq, desc, and, inArray } from "drizzle-orm";
 import { requireAuth, requireAdmin } from "../middlewares/authMiddleware";
 import { getEffectiveSites, canAccessSite, getEffectivePermissions } from "../lib/permissions";
 import { startCrawlerJob, type CrawlerConfig } from "../lib/crawler";
+import { aggregateRuleCoverage, classifyScanConfidence } from "../lib/ruleCoverage";
 
 const router: IRouter = Router();
 const siteColumns = {
@@ -832,10 +833,11 @@ router.get("/sites/:id/dashboard", requireAuth, async (req: Request, res: Respon
           AND COALESCE(cp.page_type, 'General') = $2
       ))`;
     const scopedParams = [session.scan_session_id, pageGroup, session.crawler_id];
-    const scopedPageCounts = await client.query<{ total_scanned: number; total_discovered: number }>(
+    const scopedPageCounts = await client.query<{ total_scanned: number; total_discovered: number; failed_pages: number }>(
       `SELECT
          COUNT(DISTINCT pr.id)::int AS total_scanned,
-         COUNT(DISTINCT cp.id)::int AS total_discovered
+         COUNT(DISTINCT cp.id)::int AS total_discovered,
+         COUNT(*) FILTER (WHERE cp.status IN ('failed', 'broken'))::int AS failed_pages
        FROM crawler_pages cp
        LEFT JOIN page_results pr ON pr.scan_id = $1 AND pr.url = cp.url
        WHERE cp.session_id = $3
@@ -844,6 +846,76 @@ router.get("/sites/:id/dashboard", requireAuth, async (req: Request, res: Respon
     );
     const scopedTotalScanned = scopedPageCounts.rows[0]?.total_scanned ?? 0;
     const scopedTotalDiscovered = scopedPageCounts.rows[0]?.total_discovered ?? 0;
+    const executionRows = await client.query<{
+      rule_id: string;
+      status: "not-selected" | "not-applicable" | "executed" | "failed";
+      execution_tier: "automatic" | "manual";
+    }>(
+      `SELECT rs.rule_id, rs.status, rs.execution_tier
+         FROM rule_execution_statuses rs
+         JOIN page_results pr ON pr.id = rs.page_result_id
+         LEFT JOIN crawler_pages cp ON cp.session_id = $3 AND cp.url = pr.url
+        WHERE pr.scan_id = $1
+          AND ($2::text IS NULL OR COALESCE(cp.page_type, 'General') = $2)`,
+      scopedParams,
+    );
+    const executionCoverage = aggregateRuleCoverage(
+      executionRows.rows.map((row) => ({
+        ruleId: row.rule_id,
+        status: row.status,
+        executionTier: row.execution_tier,
+      })),
+      scopedTotalScanned,
+    );
+    const denominatorRes = await client.query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n
+         FROM page_results pr
+        WHERE pr.scan_id = $1 AND pr.status = 'completed'
+          AND NOT EXISTS (SELECT 1 FROM rule_page_stats rps WHERE rps.page_result_id = pr.id)
+          AND ($2::text IS NULL OR EXISTS (
+            SELECT 1 FROM crawler_pages cp
+             WHERE cp.session_id = $3 AND cp.url = pr.url
+               AND COALESCE(cp.page_type, 'General') = $2
+          ))`,
+      scopedParams,
+    );
+    const carriedRes = await client.query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n
+         FROM page_results pr
+        WHERE pr.scan_id = $1 AND pr.status = 'completed'
+          AND pr.carried_forward = TRUE
+          AND ($2::text IS NULL OR EXISTS (
+            SELECT 1 FROM crawler_pages cp
+             WHERE cp.session_id = $3 AND cp.url = pr.url
+               AND COALESCE(cp.page_type, 'General') = $2
+          ))`,
+      scopedParams,
+    );
+    const manualUnresolved = executionCoverage.rules
+      .filter((rule) => rule.executionTier === "manual")
+      .reduce((sum, rule) => sum + rule.executed, 0);
+    const potentialRes = await client.query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n
+         FROM accessibility_issues ai
+         JOIN page_results pr ON pr.id = ai.page_id
+        WHERE pr.scan_id = $1 AND ai.rule_type = 'Potential Issue'
+          AND ($2::text IS NULL OR EXISTS (
+            SELECT 1 FROM crawler_pages cp
+             WHERE cp.session_id = $3 AND cp.url = pr.url
+               AND COALESCE(cp.page_type, 'General') = $2
+          ))`,
+      scopedParams,
+    );
+    const confidence = classifyScanConfidence({
+      totalPages: Math.max(scopedTotalScanned, scopedTotalDiscovered),
+      completedPages: Math.max(0, scopedTotalScanned - Number(scopedPageCounts.rows[0]?.failed_pages ?? 0)),
+      failedPages: Number(scopedPageCounts.rows[0]?.failed_pages ?? 0),
+      automaticApplicabilityCoverage: executionCoverage.automaticApplicabilityCoverage,
+      manualUnresolved,
+      potentialUnresolved: Number(potentialRes.rows[0]?.n ?? 0),
+      fallbackDenominatorPages: Number(denominatorRes.rows[0]?.n ?? 0),
+      carriedForwardPages: Number(carriedRes.rows[0]?.n ?? 0),
+    });
 
     // Impact breakdown
     const impactRes = await client.query(
@@ -1047,6 +1119,9 @@ router.get("/sites/:id/dashboard", requireAuth, async (req: Request, res: Respon
         totalOccurrences,
         distinctRules,
         brokenLinks: session.broken_links_count,
+        ruleExecution: executionCoverage.rules,
+        automaticApplicabilityCoverage: executionCoverage.automaticApplicabilityCoverage,
+        confidence,
       },
       levelScores,
       impactBreakdown: impactRes.rows,

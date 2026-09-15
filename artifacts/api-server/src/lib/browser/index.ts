@@ -24,24 +24,39 @@ import { runTablesFormsRules } from "./rules/tables-forms";
 import { runTextStyleRules } from "./rules/text-style";
 import { runStructureMiscRules } from "./rules/structure-misc";
 import { runKeyboardMiscRules } from "./rules/keyboard-misc";
+import {
+  getRuleExecutionStatuses,
+  getSelectedRuleIds,
+  hasManualRuleSelected,
+  isFamilySelected,
+  isRuleSelected,
+  isManualRule,
+  type RuleFamily,
+} from "./registry";
 
+// Legacy callers may continue to use options: { emitManualOnlyRules?: boolean } = {}.
 function runAllRules(
-  options: { emitManualOnlyRules?: boolean } = {},
+  options: { emitManualOnlyRules?: boolean; rules?: string[] } = {},
 ): {
   issues: import("./types").ScanRawResult[];
   stats: { ruleId: string; totalChecked: number; scope: "element" | "page" }[];
+  ruleStatuses: import("./types").RuleExecutionStatus[];
 } {
   const results: import("./types").ScanRawResult[] = [];
+  const selected = getSelectedRuleIds(options.rules);
+  const executedFamilies = new Set<RuleFamily>();
   // Siteimprove/Alfa parity: rules Alfa classifies as "can't tell" (manual
   // review) are never auto-reported by the Siteimprove checker. Keeping the
   // detection code gated by default preserves that behavior. The API can
   // explicitly enable this tier for a scan that selected a manual-only rule.
-  const EMIT_MANUAL_ONLY_RULES = options.emitManualOnlyRules === true;
+  const EMIT_MANUAL_ONLY_RULES =
+    options.emitManualOnlyRules === true || hasManualRuleSelected(selected);
 
   // Accumulate totalChecked per rule — some rules call pushStat multiple times
   // with the same ruleId (e.g. R14 checks two element sets); we add them up.
   const statMap = new Map<string, { totalChecked: number; scope: "element" | "page" }>();
   const pushStat: PushStatFn = (ruleId, totalChecked, scope) => {
+    if (!isRuleSelected(ruleId, selected)) return;
     const existing = statMap.get(ruleId);
     if (existing) {
       existing.totalChecked += totalChecked;
@@ -50,16 +65,21 @@ function runAllRules(
     }
   };
 
-  runDocumentLanguageRules(results, EMIT_MANUAL_ONLY_RULES, pushStat);
-  runNamesRules(results, pushStat);
-  runAriaRules(results, EMIT_MANUAL_ONLY_RULES, pushStat);
-  runMediaRules(results, EMIT_MANUAL_ONLY_RULES, pushStat);
-  runHeadingsLandmarksRules(results, EMIT_MANUAL_ONLY_RULES, pushStat);
-  runLinksContrastRules(results, EMIT_MANUAL_ONLY_RULES, pushStat);
-  runTablesFormsRules(results, pushStat);
-  runTextStyleRules(results, EMIT_MANUAL_ONLY_RULES, pushStat);
-  runStructureMiscRules(results, EMIT_MANUAL_ONLY_RULES, pushStat);
-  runKeyboardMiscRules(results, EMIT_MANUAL_ONLY_RULES, pushStat);
+  const runFamily = (family: RuleFamily, run: () => void) => {
+    if (!isFamilySelected(family, selected)) return;
+    executedFamilies.add(family);
+    run();
+  };
+  runFamily("document", () => runDocumentLanguageRules(results, EMIT_MANUAL_ONLY_RULES, pushStat));
+  runFamily("names", () => runNamesRules(results, pushStat));
+  runFamily("aria", () => runAriaRules(results, EMIT_MANUAL_ONLY_RULES, pushStat));
+  runFamily("media", () => runMediaRules(results, EMIT_MANUAL_ONLY_RULES, pushStat));
+  runFamily("headings-landmarks", () => runHeadingsLandmarksRules(results, EMIT_MANUAL_ONLY_RULES, pushStat));
+  runFamily("links-contrast", () => runLinksContrastRules(results, EMIT_MANUAL_ONLY_RULES, pushStat));
+  runFamily("tables-forms", () => runTablesFormsRules(results, pushStat));
+  runFamily("text-style", () => runTextStyleRules(results, EMIT_MANUAL_ONLY_RULES, pushStat));
+  runFamily("structure", () => runStructureMiscRules(results, EMIT_MANUAL_ONLY_RULES, pushStat));
+  runFamily("keyboard", () => runKeyboardMiscRules(results, EMIT_MANUAL_ONLY_RULES, pushStat));
 
   const stats = Array.from(statMap.entries()).map(([ruleId, s]) => ({
     ruleId,
@@ -67,7 +87,15 @@ function runAllRules(
     scope: s.scope,
   }));
 
-  return { issues: results, stats };
+  return {
+    issues: results.filter((issue) => isRuleSelected(issue.ruleId, selected)),
+    stats,
+    ruleStatuses: getRuleExecutionStatuses(selected, executedFamilies, stats).map((status) =>
+      !EMIT_MANUAL_ONLY_RULES && isManualRule(status.ruleId)
+        ? { ...status, status: "not-applicable" as const }
+        : status,
+    ),
+  };
 }
 
 // ─── Expose on window for Puppeteer injection ─────────────────────────────────

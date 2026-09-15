@@ -183,16 +183,31 @@ function cleanCustomFields(value: unknown): Record<string, string> {
 }
 
 function sanitizeRichText(input: string): string {
-  const allowedTags = new Set(["p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li", "a", "code", "pre", "blockquote", "h3", "h4", "table", "thead", "tbody", "tfoot", "tr", "th", "td"]);
+  const allowedTags = new Set(["p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li", "a", "code", "pre", "blockquote", "h3", "h4", "table", "thead", "tbody", "tfoot", "tr", "th", "td", "figure", "figcaption", "img"]);
   return input.slice(0, 50_000)
     .replace(/<!--[\s\S]*?-->|<(script|style|iframe|object|embed|svg|math)[\s\S]*?<\/\1\s*>/gi, "")
     .replace(/<(\/?)([a-z0-9]+)(?:\s[^>]*)?>/gi, (tag, closing: string, name: string) => {
       const tagName = name.toLowerCase();
       if (!allowedTags.has(tagName)) return "";
       if (closing) return `</${tagName}>`;
-      if (tagName !== "a") return `<${tagName}>`;
-      const href = tag.match(/\bhref\s*=\s*["']?([^"'\s>]+)/i)?.[1] ?? "";
-      return /^(https?:|mailto:)/i.test(href) ? `<a href="${href.replace(/"/g, "%22")}">` : "<a>";
+      if (tagName === "a") {
+        const href = tag.match(/\bhref\s*=\s*["']?([^"'\s>]+)/i)?.[1] ?? "";
+        return /^(https?:|mailto:)/i.test(href) ? `<a href="${href.replace(/"/g, "%22")}">` : "<a>";
+      }
+      if (tagName === "img") {
+        const src = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i)?.[1] ?? "";
+        if (!/^\/api\/issues\/\d+\/attachments\/\d+$/.test(src)) return "";
+        const alt = (tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] ?? "")
+          .replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`)
+          .slice(0, 500);
+        const style = tag.match(/\bstyle\s*=\s*["']([^"']*)["']/i)?.[1] ?? "";
+        const width = Number(style.match(/(?:^|;)\s*width\s*:\s*(\d{1,3})%/i)?.[1]);
+        const safeStyle = Number.isFinite(width) && width >= 20 && width <= 100 && width % 5 === 0
+          ? ` style="width:${width}%;height:auto;max-width:100%"`
+          : "";
+        return `<img src="${src}" alt="${alt}"${safeStyle}>`;
+      }
+      return `<${tagName}>`;
     });
 }
 
@@ -208,7 +223,11 @@ function sanitizeIssueRichTextFields<T extends Record<string, any>>(issue: T): T
 }
 
 function plainRichText(value: string): string {
-  return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return value
+    .replace(/<img\b[^>]*\balt\s*=\s*["']([^"']*)["'][^>]*>/gi, " $1 ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function cleanMentionIds(value: unknown): number[] {
@@ -661,8 +680,12 @@ router.get("/issues/:issueId/attachments/:attachmentId", requireAuth, async (req
   const issue = await canSeeIssue(req, Number(req.params.issueId));
   if (!issue) { res.status(404).end(); return; }
   const [attachment] = await db.select(issueAttachmentColumns).from(appIssueAttachmentsTable)
-    .where(and(eq(appIssueAttachmentsTable.id, Number(req.params.attachmentId)), eq(appIssueAttachmentsTable.issueId, issue.id), eq(appIssueAttachmentsTable.pending, false))).limit(1);
-  if (!attachment) { res.status(404).end(); return; }
+    .where(and(eq(appIssueAttachmentsTable.id, Number(req.params.attachmentId)), eq(appIssueAttachmentsTable.issueId, issue.id))).limit(1);
+  const pendingPreviewAllowed =
+    attachment?.pending === true &&
+    attachment.uploadedBy === Number(req.session!.user!.id) &&
+    Boolean(attachment.expiresAt && attachment.expiresAt > new Date());
+  if (!attachment || (attachment.pending && !pendingPreviewAllowed)) { res.status(404).end(); return; }
   try {
     const response = await issueAttachmentStorage.downloadObject(attachment.objectPath, attachment.contentType);
     res.status(response.status);

@@ -1,16 +1,19 @@
 import React, { useEffect, useState } from "react";
-import { Loader2, Archive, Link2, X, Pencil, RotateCcw, Save } from "lucide-react";
+import { Loader2, Archive, Link2, X, Pencil, RotateCcw, Save, Maximize2, ChevronDown, MessageSquareText, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { useIssue, useUpdateIssue, useAddComment, useUpdateComment, useArchiveIssue, useRestoreIssue, useAddIssueLink, useRemoveIssueLink } from "../../hooks/use-issues";
+import { useIssue, useUpdateIssue, useAddComment, useUpdateComment, useArchiveIssue, useRestoreIssue, useAddIssueLink, useRemoveIssueLink, uploadIssueAttachment } from "../../hooks/use-issues";
 import { getStatusTransitions, STATUS_LABELS, STATUS_COLORS, TYPE_COLORS, Person, Issue, ISSUE_LINK_LABELS, ISSUE_LINK_TYPES, IssueLinkType } from "../../lib/issue-types";
 import { RichTextEditor } from "./rich-text-editor";
 import { AttachmentControl, AttachmentPreview } from "./attachment-control";
 import { useToast } from "@/hooks/use-toast";
 import { sanitizeIssueHtml } from "../../lib/sanitize-issue-html";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface IssueDetailProps {
   id: number;
@@ -22,9 +25,10 @@ interface IssueDetailProps {
   canManage: boolean;
   onClose?: () => void;
   onSelectIssue?: (id: number) => void;
+  isPopoutContent?: boolean;
 }
 
-export function IssueDetail({ id, people, issues, currentUserId, canEdit, canComment, canManage, onClose, onSelectIssue }: IssueDetailProps) {
+export function IssueDetail({ id, people, issues, currentUserId, canEdit, canComment, canManage, onClose, onSelectIssue, isPopoutContent = false }: IssueDetailProps) {
   const { data, isLoading } = useIssue(id);
   const updateIssue = useUpdateIssue(id);
   const addComment = useAddComment(id);
@@ -39,6 +43,10 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
   const [commentAttachments, setCommentAttachments] = useState<any[]>([]);
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
   const [editingCommentBody, setEditingCommentBody] = useState("");
+  const [descriptionDialogOpen, setDescriptionDialogOpen] = useState(false);
+  const [commentDialogOpen, setCommentDialogOpen] = useState(false);
+  const [issuePopoutOpen, setIssuePopoutOpen] = useState(false);
+  const [activityPanelOpen, setActivityPanelOpen] = useState(true);
   const [linkType, setLinkType] = useState<IssueLinkType>("relates_to");
   const [linkTargetId, setLinkTargetId] = useState("");
   const [editing, setEditing] = useState(false);
@@ -108,6 +116,7 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
         onSuccess: () => {
           setCommentBody("");
           setCommentAttachments([]);
+          setCommentDialogOpen(false);
           toast({ title: "Comment added" });
         }
       }
@@ -183,7 +192,7 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
     const title = editTitle.trim();
     if (!title || updateIssue.isPending) return;
     updateIssue.mutate(
-      { title, description: editDescription },
+      { title },
       {
         onSuccess: () => {
           setEditing(false);
@@ -191,6 +200,24 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
         },
         onError: (error) => toast({
           title: "Couldn't update issue details",
+          description: error.message,
+          variant: "destructive",
+        }),
+      },
+    );
+  };
+
+  const saveDescription = () => {
+    if (updateIssue.isPending) return;
+    updateIssue.mutate(
+      { description: editDescription },
+      {
+        onSuccess: () => {
+          setDescriptionDialogOpen(false);
+          toast({ title: "Description updated", description: `${issue.issueKey} was saved.` });
+        },
+        onError: (error) => toast({
+          title: "Couldn't update description",
           description: error.message,
           variant: "destructive",
         }),
@@ -214,7 +241,10 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
   const allowedStatuses = [issue.status, ...getStatusTransitions(issue.type, issue.status)];
 
   return (
-    <div className="h-full flex flex-col bg-card overflow-hidden">
+    <div
+      data-testid="panel-issue-detail"
+      className="h-full flex flex-col bg-card overflow-hidden"
+    >
       {/* Header */}
       <div className="flex-none border-b bg-card px-4 py-3">
         <div className="mb-2 flex items-start justify-between gap-3">
@@ -225,6 +255,21 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
             </Badge>
           </div>
           <div className="flex items-center gap-2">
+            {!isPopoutContent && (
+              <Button
+                data-testid="button-toggle-issue-fullscreen"
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => setIssuePopoutOpen(true)}
+                title="Pop out issue"
+                aria-label="Open issue in a large popup window"
+              >
+                <Maximize2 className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+                <span className="hidden sm:inline">Pop out</span>
+              </Button>
+            )}
             {canEdit && ["closed", "complete"].includes(issue.status) && (
               <Button
                 variant="outline"
@@ -304,20 +349,29 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
           <div className="xl:col-span-2 space-y-8">
             {/* Description */}
             <section>
-              <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">Description</h3>
-              {editing ? (
-                <RichTextEditor
-                  value={editDescription}
-                  onChange={setEditDescription}
-                  placeholder="Describe the issue, add context, and insert links..."
-                  people={people}
-                />
-              ) : (
-                <div
-                  className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 leading-relaxed bg-muted/20 p-4 rounded-lg border"
-                  dangerouslySetInnerHTML={{ __html: sanitizeIssueHtml(issue.description) || "<p>No description provided.</p>" }}
-                />
-              )}
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Description</h3>
+                {canEdit && (
+                  <Button
+                    data-testid="button-open-description-editor"
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8"
+                    onClick={() => {
+                      setEditDescription(issue.description ?? "");
+                      setDescriptionDialogOpen(true);
+                    }}
+                  >
+                    <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                    {issue.description ? "Edit description" : "Add description"}
+                  </Button>
+                )}
+              </div>
+              <div
+                className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 leading-relaxed bg-muted/20 p-4 rounded-lg border"
+                dangerouslySetInnerHTML={{ __html: sanitizeIssueHtml(issue.description) || "<p>No description provided.</p>" }}
+              />
             </section>
 
             {/* Type-Specific Fields */}
@@ -388,41 +442,44 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
               </section>
             )}
 
+            {(epic || (issue.type === "epic" && epicIssues.length > 0)) && (
+              <section aria-labelledby="issue-epic-hierarchy-heading" className="rounded-lg border bg-muted/10 p-4">
+                <h3 id="issue-epic-hierarchy-heading" className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Epic hierarchy</h3>
+                {issue.type !== "epic" && epic && (
+                  <div className="mt-3 text-sm">
+                    <span className="font-medium text-muted-foreground">Assigned Epic: </span>
+                    <Button variant="link" className="h-auto p-0 text-left font-medium" onClick={() => onSelectIssue?.(epic.id)}>
+                      {epic.issueKey} — {epic.title}
+                    </Button>
+                  </div>
+                )}
+                {issue.type === "epic" && epicIssues.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-sm font-medium text-muted-foreground">Contains {epicIssues.length} issue{epicIssues.length === 1 ? "" : "s"}</p>
+                    <ul className="mt-2 space-y-1" aria-label="Issues contained by this Epic">
+                      {epicIssues.map((child) => (
+                        <li key={child.id}>
+                          <Button variant="link" className="h-auto p-0 text-left text-sm" onClick={() => onSelectIssue?.(child.id)}>
+                            {child.issueKey} — {child.title}
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </section>
+            )}
+
             <section aria-labelledby="issue-relationships-heading" className="rounded-lg border bg-muted/10 p-4">
               <div className="mb-4 flex items-center gap-2">
                 <Link2 className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                <h3 id="issue-relationships-heading" className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Relationships</h3>
+                <div>
+                  <h3 id="issue-relationships-heading" className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Relationships</h3>
+                  <p className="mt-0.5 text-xs text-muted-foreground">Link this issue to any other issue. Epic assignment is not required.</p>
+                </div>
               </div>
 
               <div className="space-y-3">
-                {issue.type !== "epic" && (
-                  <div className="text-sm">
-                    <span className="font-medium text-muted-foreground">Epic: </span>
-                    {epic ? (
-                      <Button variant="link" className="h-auto p-0 text-left font-medium" onClick={() => onSelectIssue?.(epic.id)}>
-                        {epic.issueKey} — {epic.title}
-                      </Button>
-                    ) : <span>No Epic assigned</span>}
-                  </div>
-                )}
-
-                {issue.type === "epic" && (
-                  <div>
-                    <p className="text-sm font-medium text-muted-foreground">Contains {epicIssues.length} issue{epicIssues.length === 1 ? "" : "s"}</p>
-                    {epicIssues.length > 0 && (
-                      <ul className="mt-2 space-y-1" aria-label="Issues contained by this Epic">
-                        {epicIssues.map((child) => (
-                          <li key={child.id}>
-                            <Button variant="link" className="h-auto p-0 text-left text-sm" onClick={() => onSelectIssue?.(child.id)}>
-                              {child.issueKey} — {child.title}
-                            </Button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                )}
-
                 {links.length > 0 && (
                   <ul className="space-y-2" aria-label="Linked issues">
                     {links.map((link) => (
@@ -441,6 +498,9 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
                       </li>
                     ))}
                   </ul>
+                )}
+                {links.length === 0 && !canEdit && (
+                  <p className="text-sm text-muted-foreground">No issue relationships added.</p>
                 )}
 
                 {canEdit && (
@@ -507,131 +567,132 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
               </section>
             )}
 
-            {/* Comments */}
-            <section className="pt-6 border-t">
-              <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">Activity</h3>
-              
-              {canComment && (
-                <div className="mb-8 bg-muted/10 p-4 rounded-lg border">
-                  <h4 className="text-xs font-bold uppercase tracking-wider mb-3">Add Comment</h4>
-                  <RichTextEditor 
-                    value={commentBody} 
-                    onChange={setCommentBody} 
-                    placeholder="Write a comment... Use @ to mention" 
-                    people={people}
-                  />
-                  
-                  {commentAttachments.length > 0 && (
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {commentAttachments.map((att, idx) => (
-                         <AttachmentPreview 
-                           key={idx} 
-                           attachment={att} 
-                           onRemove={() => setCommentAttachments(prev => prev.filter((_, i) => i !== idx))} 
-                         />
-                      ))}
-                    </div>
-                  )}
-                  
-                  <div className="mt-3 flex items-center justify-between">
-                    <AttachmentControl 
-                      issueId={issue.id} 
-                      onUploaded={(att) => setCommentAttachments(prev => [...prev, att])} 
-                    />
-                    <Button onClick={submitComment} disabled={!commentBody.trim() && commentAttachments.length === 0}>
-                      Save Comment
-                    </Button>
-                  </div>
-                </div>
-              )}
+            <Collapsible open={activityPanelOpen} onOpenChange={setActivityPanelOpen} asChild>
+              <section className="border-t pt-6">
+                <CollapsibleTrigger asChild>
+                  <button
+                    data-testid="button-toggle-issue-history"
+                    type="button"
+                    className="mb-3 flex w-full items-center justify-between rounded-lg border bg-muted/20 px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label={`${activityPanelOpen ? "Collapse" : "Expand"} comments and activity`}
+                  >
+                    <span>
+                      <span className="block text-sm font-semibold uppercase tracking-wider text-muted-foreground">Discussion & history</span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">{comments.length} comments · {activity.length} activity events</span>
+                    </span>
+                    <ChevronDown className={`h-5 w-5 text-muted-foreground transition-transform ${activityPanelOpen ? "rotate-180" : ""}`} aria-hidden="true" />
+                  </button>
+                </CollapsibleTrigger>
 
-              <div className="space-y-6">
-                {comments.map((comment) => (
-                  <div key={comment.id} className="flex gap-4">
-                    <div className="h-8 w-8 rounded-full bg-primary/10 flex-shrink-0 flex items-center justify-center text-primary font-bold text-xs mt-1">
-                      {comment.authorName.charAt(0).toUpperCase()}
+                <CollapsibleContent>
+                  <Tabs defaultValue="comments" className="rounded-xl border bg-card">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b p-3">
+                      <TabsList className="grid w-full grid-cols-2 sm:w-auto sm:min-w-[320px]">
+                        <TabsTrigger data-testid="tab-issue-comments" value="comments">
+                          <MessageSquareText className="mr-2 h-4 w-4" aria-hidden="true" />
+                          Comments ({comments.length})
+                        </TabsTrigger>
+                        <TabsTrigger data-testid="tab-issue-activity" value="activity">
+                          <History className="mr-2 h-4 w-4" aria-hidden="true" />
+                          Activity log ({activity.length})
+                        </TabsTrigger>
+                      </TabsList>
+                      {canComment && (
+                        <Button
+                          data-testid="button-open-comment-editor"
+                          type="button"
+                          size="sm"
+                          onClick={() => setCommentDialogOpen(true)}
+                        >
+                          Add comment
+                        </Button>
+                      )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-3 mb-1.5">
-                        <span className="font-semibold text-sm">{comment.authorName}</span>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-muted-foreground">
-                            {new Date(comment.createdAt).toLocaleString()}
-                            {comment.updatedAt && new Date(comment.updatedAt).getTime() > new Date(comment.createdAt).getTime() + 1000 ? " (edited)" : ""}
-                          </span>
-                          {canComment && currentUserId === comment.authorId && editingCommentId !== comment.id && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 px-2 text-xs"
-                              onClick={() => {
-                                setEditingCommentId(comment.id);
-                                setEditingCommentBody(comment.body);
-                              }}
-                              aria-label={`Edit comment by ${comment.authorName}`}
-                            >
-                              <Pencil className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
-                              Edit
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                      {editingCommentId === comment.id ? (
-                        <div className="rounded-lg border bg-muted/10 p-3">
-                          <RichTextEditor
-                            value={editingCommentBody}
-                            onChange={setEditingCommentBody}
-                            placeholder="Edit your comment..."
-                            people={people}
-                          />
-                          <div className="mt-3 flex justify-end gap-2">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              disabled={updateComment.isPending}
-                              onClick={() => {
-                                setEditingCommentId(null);
-                                setEditingCommentBody("");
-                              }}
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              disabled={!editingCommentBody.trim() || updateComment.isPending}
-                              onClick={saveEditedComment}
-                            >
-                              {updateComment.isPending ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Save className="mr-1 h-3.5 w-3.5" aria-hidden="true" />}
-                              Save
-                            </Button>
+
+                    <TabsContent value="comments" className="m-0">
+                      <div data-testid="container-issue-comments" className="h-[420px] overflow-y-auto overscroll-contain p-4 sm:p-5">
+                        {comments.length === 0 ? (
+                          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No comments yet.</div>
+                        ) : (
+                          <div className="space-y-6">
+                            {comments.map((comment) => (
+                              <div key={comment.id} className="flex gap-4">
+                                <div className="h-8 w-8 rounded-full bg-primary/10 flex-shrink-0 flex items-center justify-center text-primary font-bold text-xs mt-1">
+                                  {comment.authorName.charAt(0).toUpperCase()}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center justify-between gap-3 mb-1.5">
+                                    <span className="font-semibold text-sm">{comment.authorName}</span>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs text-muted-foreground">
+                                        {new Date(comment.createdAt).toLocaleString()}
+                                        {comment.updatedAt && new Date(comment.updatedAt).getTime() > new Date(comment.createdAt).getTime() + 1000 ? " (edited)" : ""}
+                                      </span>
+                                      {canComment && currentUserId === comment.authorId && editingCommentId !== comment.id && (
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-7 px-2 text-xs"
+                                          onClick={() => {
+                                            setEditingCommentId(comment.id);
+                                            setEditingCommentBody(comment.body);
+                                          }}
+                                          aria-label={`Edit comment by ${comment.authorName}`}
+                                        >
+                                          <Pencil className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                                          Edit
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </div>
+                                  {editingCommentId === comment.id ? (
+                                    <div className="rounded-lg border bg-muted/10 p-3">
+                                      <RichTextEditor value={editingCommentBody} onChange={setEditingCommentBody} placeholder="Edit your comment..." people={people} />
+                                      <div className="mt-3 flex justify-end gap-2">
+                                        <Button type="button" variant="outline" size="sm" disabled={updateComment.isPending} onClick={() => { setEditingCommentId(null); setEditingCommentBody(""); }}>Cancel</Button>
+                                        <Button type="button" size="sm" disabled={!editingCommentBody.trim() || updateComment.isPending} onClick={saveEditedComment}>
+                                          {updateComment.isPending ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Save className="mr-1 h-3.5 w-3.5" aria-hidden="true" />}
+                                          Save
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 bg-muted/20 p-3 rounded-lg border" dangerouslySetInnerHTML={{ __html: sanitizeIssueHtml(comment.body) }} />
+                                  )}
+                                  {comment.attachments && comment.attachments.length > 0 && (
+                                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                      {comment.attachments.map(att => <AttachmentPreview key={att.id || att.objectPath} attachment={att} issueId={issue.id} />)}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        </div>
-                      ) : (
-                        <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 bg-muted/20 p-3 rounded-lg border" dangerouslySetInnerHTML={{ __html: sanitizeIssueHtml(comment.body) }} />
-                      )}
-                      
-                      {comment.attachments && comment.attachments.length > 0 && (
-                        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {comment.attachments.map(att => (
-                            <AttachmentPreview key={att.id || att.objectPath} attachment={att} issueId={issue.id} />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                
-                {activity.map((event) => (
-                  <div key={event.id} className="flex items-center gap-3 py-1 pl-11 text-xs text-muted-foreground">
-                    <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
-                    <span><strong className="text-foreground/70 font-medium">{event.actorName}</strong> {event.action} • {new Date(event.createdAt).toLocaleString()}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
+                        )}
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="activity" className="m-0">
+                      <div data-testid="container-issue-activity" className="h-[420px] overflow-y-auto overscroll-contain p-4 sm:p-5">
+                        {activity.length === 0 ? (
+                          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No activity recorded yet.</div>
+                        ) : (
+                          <ol className="space-y-1">
+                            {activity.map((event) => (
+                              <li key={event.id} className="flex items-start gap-3 rounded-lg px-3 py-3 text-sm text-muted-foreground hover:bg-muted/30">
+                                <div className="mt-2 h-1.5 w-1.5 flex-none rounded-full bg-muted-foreground/30" />
+                                <span><strong className="font-medium text-foreground/70">{event.actorName}</strong> {event.action} <span aria-hidden="true">•</span> {new Date(event.createdAt).toLocaleString()}</span>
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </div>
+                    </TabsContent>
+                  </Tabs>
+                </CollapsibleContent>
+              </section>
+            </Collapsible>
 
           </div>
 
@@ -757,6 +818,97 @@ export function IssueDetail({ id, people, issues, currentUserId, canEdit, canCom
           </div>
         </div>
       </div>
+
+      <Dialog open={descriptionDialogOpen} onOpenChange={setDescriptionDialogOpen}>
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{issue.description ? "Edit description" : "Add description"}</DialogTitle>
+            <DialogDescription>The saved description will appear in the Description section of this issue.</DialogDescription>
+          </DialogHeader>
+          <RichTextEditor
+            value={editDescription}
+            onChange={setEditDescription}
+            placeholder="Describe the issue, add context, tables, and images..."
+            people={people}
+            issueId={issue.id}
+            onImageUpload={(file) => uploadIssueAttachment(issue.id, file, true)}
+          />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setDescriptionDialogOpen(false)} disabled={updateIssue.isPending}>Cancel</Button>
+            <Button data-testid="button-save-description" type="button" onClick={saveDescription} disabled={updateIssue.isPending}>
+              {updateIssue.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save description
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={commentDialogOpen} onOpenChange={setCommentDialogOpen}>
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Add comment</DialogTitle>
+            <DialogDescription>Your comment will appear in the Activity section after submission.</DialogDescription>
+          </DialogHeader>
+          <RichTextEditor
+            value={commentBody}
+            onChange={setCommentBody}
+            placeholder="Write a comment... Use @ to mention"
+            people={people}
+            issueId={issue.id}
+            onImageUpload={async (file) => {
+              const attachment = await uploadIssueAttachment(issue.id, file);
+              setCommentAttachments((current) => [...current, attachment]);
+              return attachment;
+            }}
+          />
+          {commentAttachments.length > 0 && (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {commentAttachments.map((attachment, index) => (
+                <AttachmentPreview
+                  key={attachment.id || index}
+                  attachment={attachment}
+                  onRemove={() => setCommentAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                />
+              ))}
+            </div>
+          )}
+          <DialogFooter className="sm:justify-between">
+            <AttachmentControl
+              issueId={issue.id}
+              onUploaded={(attachment) => setCommentAttachments((current) => [...current, attachment])}
+            />
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setCommentDialogOpen(false)} disabled={addComment.isPending}>Cancel</Button>
+              <Button data-testid="button-save-comment" type="button" onClick={submitComment} disabled={(!commentBody.trim() && commentAttachments.length === 0) || addComment.isPending}>
+                {addComment.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Save comment
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {!isPopoutContent && (
+        <Dialog open={issuePopoutOpen} onOpenChange={setIssuePopoutOpen}>
+          <DialogContent className="h-[92vh] max-w-[94vw] gap-0 p-0 2xl:max-w-[1600px] [&>button]:z-50">
+            <DialogHeader className="sr-only">
+              <DialogTitle>{issue.issueKey}: {issue.title}</DialogTitle>
+              <DialogDescription>Expanded issue ticket</DialogDescription>
+            </DialogHeader>
+            <IssueDetail
+              id={id}
+              people={people}
+              issues={issues}
+              currentUserId={currentUserId}
+              canEdit={canEdit}
+              canComment={canComment}
+              canManage={canManage}
+              onSelectIssue={onSelectIssue}
+              isPopoutContent
+            />
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

@@ -4,6 +4,43 @@ import { ARIA_VALUE_DESCRIPTORS, ariaValueError } from "../aria-value-validator"
 import { elementContextForAI, getSelector, outerHtmlSnippet } from "../dom-helpers";
 import { isActuallyTabbable, isIncludedInAccessibilityTree, isProgrammaticallyHidden, isVisible, isVisibleRect } from "../visibility";
 
+function isR17Tabbable(el: Element): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+
+  // aria-hidden is intentionally not considered here: R17 asks whether an
+  // element hidden from assistive technology remains in the keyboard tab
+  // order. All other authored/rendered hiding mechanisms remove it from that
+  // order and must suppress the finding.
+  let node: HTMLElement | null = el;
+  while (node) {
+    if (node.hidden || node.hasAttribute("inert")) return false;
+    if (node.matches("details:not([open])")) {
+      const summary = node.querySelector(":scope > summary");
+      if (!summary?.contains(el)) return false;
+    }
+    const style = window.getComputedStyle(node);
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      style.visibility === "collapse" ||
+      (style as CSSStyleDeclaration & { contentVisibility?: string }).contentVisibility === "hidden"
+    ) {
+      return false;
+    }
+    node = node.parentElement;
+  }
+
+  if (el.matches("input[type='hidden'],:disabled,[disabled]")) return false;
+  const tabIndex = el.getAttribute("tabindex");
+  if (tabIndex !== null) {
+    const numeric = Number.parseInt(tabIndex, 10);
+    return Number.isFinite(numeric) && numeric >= 0;
+  }
+  return el.matches(
+    "a[href],area[href],button,input:not([type='hidden']),select,textarea,summary,iframe,audio[controls],video[controls]",
+  );
+}
+
 export function runAriaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: boolean, pushStat: PushStatFn): void {
   // ACT-R16: Required ARIA attribute missing (WAI-ARIA)
   // ════════════════════════════════════════════════════════════════════════
@@ -44,17 +81,9 @@ export function runAriaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: b
   // ════════════════════════════════════════════════════════════════════════
   {
     const r17Seen = new Set<string>();
-    const r17FocusableSel = "a[href]:not([tabindex='-1']), button:not([disabled]):not([tabindex='-1']), input:not([disabled]):not([type='hidden']):not([tabindex='-1']), select:not([disabled]):not([tabindex='-1']), textarea:not([disabled]):not([tabindex='-1'])";
-    // Alfa alignment: an element is only tabbable if it is actually rendered —
-    // display:none (self or ancestor) removes it from the tab order entirely.
-    const isActuallyTabbable = (e: Element) => e.getClientRects().length > 0 || (e instanceof HTMLElement && e.offsetParent !== null);
+    const r17FocusableSel = "a[href], area[href], button, input:not([type='hidden']), select, textarea, summary, iframe, audio[controls], video[controls], [tabindex]";
     document.querySelectorAll("[aria-hidden='true']").forEach((el) => {
-      const tabIdx = el.getAttribute("tabindex");
-      // Alfa alignment: only flag TABBABLE elements — tabindex="-1" removes the
-      // element from tab order, so it does not violate R17. input[type=hidden]
-      // is never focusable.
-      const selfFocusable = ((el.matches("a[href], button:not([disabled]), input:not([disabled]):not([type='hidden']), select:not([disabled]), textarea:not([disabled])") && tabIdx !== "-1") || (tabIdx !== null && tabIdx !== "-1" && parseInt(tabIdx, 10) >= 0)) && isActuallyTabbable(el);
-      if (selfFocusable) {
+      if (isR17Tabbable(el)) {
         const key = getSelector(el);
         if (!r17Seen.has(key)) {
           r17Seen.add(key);
@@ -62,7 +91,7 @@ export function runAriaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: b
         }
       }
       el.querySelectorAll(r17FocusableSel).forEach((child) => {
-        if (!isActuallyTabbable(child)) return;
+        if (!isR17Tabbable(child)) return;
         const key = getSelector(child);
         if (r17Seen.has(key)) return;
         r17Seen.add(key);

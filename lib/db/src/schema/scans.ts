@@ -55,9 +55,32 @@ export const pageResultsTable = pgTable("page_results", {
   pageHtml: text("page_html"),
   contentHash: text("content_hash"),
   carriedForward: boolean("carried_forward").default(false).notNull(),
+  /** Sanitized HTTP provenance. url remains the requested URL for compatibility. */
+  finalUrl: text("final_url"),
+  httpStatus: integer("http_status"),
+  contentType: text("content_type"),
+  responseCapturedAt: timestamp("response_captured_at"),
+  acquisitionMethod: text("acquisition_method"),
+  proxyStrategy: text("proxy_strategy"),
+  rawHtmlHash: text("raw_html_hash"),
+  renderedDomHash: text("rendered_dom_hash"),
 }, (t) => [
   index("page_results_scan_id_idx").on(t.scanId),
   index("page_results_url_hash_idx").on(t.url, t.contentHash),
+]);
+
+/** Registry evidence persisted independently of accessibility issue rows. */
+export const ruleExecutionStatusesTable = pgTable("rule_execution_statuses", {
+  id: serial("id").primaryKey(),
+  pageResultId: integer("page_result_id").notNull().references(() => pageResultsTable.id, { onDelete: "cascade" }),
+  ruleId: text("rule_id").notNull(),
+  status: text("status").notNull(),
+  executionTier: text("execution_tier").notNull().default("automatic"),
+  carriedForward: boolean("carried_forward").notNull().default(false),
+}, (t) => [
+  uniqueIndex("rule_execution_statuses_page_rule_unique").on(t.pageResultId, t.ruleId),
+  index("rule_execution_statuses_page_idx").on(t.pageResultId),
+  index("rule_execution_statuses_rule_idx").on(t.ruleId, t.status),
 ]);
 
 export const pageInteractionStatesTable = pgTable("page_interaction_states", {

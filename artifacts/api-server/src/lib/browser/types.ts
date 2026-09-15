@@ -11,3 +11,5 @@ export type ScanRawResult = {
 };
 
 export type PushStatFn = (ruleId: string, totalChecked: number, scope: "element" | "page") => void;
+
+export type RuleExecutionStatus = import("./registry").RuleExecutionStatus;

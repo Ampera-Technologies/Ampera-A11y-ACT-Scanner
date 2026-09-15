@@ -81,7 +81,9 @@ const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 function AppStatusGate({ children }: { children: React.ReactNode }) {
   const { status } = useAppStatus();
-  if (status === "checking" || status === "offline") {
+  // Checking is deliberately non-blocking. The first probe and transient
+  // retries must not replace an otherwise usable application shell.
+  if (status === "offline") {
     return <MaintenancePage />;
   }
   return <>{children}</>;

@@ -48,6 +48,9 @@ const browserEntrySource = read("artifacts/api-server/src/lib/browser/index.ts")
       "artifacts/accessibility-scanner/src/lib/actRules.ts",
     );
     const homeSource = read("artifacts/accessibility-scanner/src/pages/home.tsx");
+    const ariaRulesSource = read(
+      "artifacts/api-server/src/lib/browser/rules/aria.ts",
+    );
 
     const apiIds = numericRuleIds(apiSource, /"ACT-R(\d+)":\s*\{/g);
     const frontendIds = numericRuleIds(frontendSource, /"ACT-R(\d+)":\s*\{/g);
@@ -76,6 +79,72 @@ const browserEntrySource = read("artifacts/api-server/src/lib/browser/index.ts")
     );
   });
 
+  it("keeps the SIA media-alternative metadata and R31 mapping aligned", () => {
+    const apiSource = read("artifacts/api-server/src/lib/scanner.ts");
+    const frontendSource = read(
+      "artifacts/accessibility-scanner/src/lib/actRules.ts",
+    );
+    const homeSource = read("artifacts/accessibility-scanner/src/pages/home.tsx");
+    const ariaRulesSource = read(
+      "artifacts/api-server/src/lib/browser/rules/aria.ts",
+    );
+
+    expect(apiSource).toContain('"ACT-R31": { sc: ["1.2.3"], level: ["A"] }');
+    expect(frontendSource).toContain('"ACT-R31": { sc: ["1.2.3"], level: ["A"] }');
+    expect(frontendSource).not.toContain('"ACT-R31": { sc: ["1.4.8"]');
+    expect(frontendSource).toContain(
+      'title: "<audio> element content is media alternative for text"',
+    );
+    expect(frontendSource).toContain(
+      'title: "<video> element content is media alternative for text"',
+    );
+    expect(frontendSource).toContain(
+      'title: "<video> element visual-only content has accessible alternative"',
+    );
+    expect(homeSource).toContain(
+      "<video> element content is media alternative for text (WCAG 1.2.3)",
+    );
+    expect(browserSource).toContain("captureStream.call(video)");
+    expect(browserSource).toContain(
+      "absence is unknown",
+    );
+    expect(browserSource).toContain(
+      "const negativeClaim =",
+    );
+    expect(browserSource).toContain('ruleId: "ACT-R33"');
+    expect(browserSource).toContain("hasDeclaredMediaAlternative(media)");
+    expect(browserSource).toContain('track[kind="captions"]');
+    expect(browserSource).toContain('ruleId: "ACT-R25"');
+    expect(browserSource).toContain("if (audioState !== false) return;");
+    expect(browserSource).toContain('ruleId: "ACT-R37"');
+    expect(browserSource).toContain("passesMediaAlternativeForText");
+    expect(apiSource).toContain(
+      "Does this video have a strict accessible alternative?",
+    );
+    expect(frontendSource).toContain(
+      "The video's visual content must pass at least one path",
+    );
+    expect(homeSource).toContain('id: "ACT-R37"');
+    expect(apiSource).toContain('relatedRules: ["ACT-R37"]');
+    expect(apiSource).toContain('relatedRules: ["ACT-R38"]');
+    expect(frontendSource).toContain('relatedRules: ["ACT-R37"]');
+    expect(frontendSource).toContain('relatedRules: ["ACT-R38"]');
+    expect(ariaRulesSource).toContain('unsupported or prohibited on role="${role}"');
+    expect(apiSource).not.toContain(
+      '"ACT-R36": {\n    type: "Issue",\n    description: "ARIA attribute is prohibited on this role",\n    remediation:\n      "Remove ARIA attributes that are prohibited for the element\'s role per the ARIA specification",\n    deprecated: true',
+    );
+  });
+
+  it("reports headerless data tables under ACT-R46", () => {
+    expect(browserSource).toContain(
+      'const hasHeaders = table.querySelector("th, [role=\'columnheader\'], [role=\'rowheader\']")',
+    );
+    expect(browserSource).toContain(
+      "Table data cells cannot be associated with headers because the table has no <th>",
+    );
+    expect(browserSource).toContain('ruleId: "ACT-R46"');
+  });
+
   it("does not emit unresolved contrast questions as automatic R66/R69 findings", () => {
     expect(browserSource).toContain(
       'if (bgResolution.kind === "indeterminate")',
@@ -89,6 +158,11 @@ const browserEntrySource = read("artifacts/api-server/src/lib/browser/index.ts")
     expect(browserSource).toContain(
       'isLinkText ? "ACT-R89" : "ACT-R66"',
     );
+  });
+
+  it("keeps ACT-R19 on the shared complete ARIA value schema", () => {
+    expect(browserSource).toContain("ARIA_VALUE_DESCRIPTORS");
+    expect(browserSource).toContain("ariaValueError(name, value)");
   });
 
   it("keeps ACT-R99 as a targeted missing-main-landmark check", () => {
@@ -113,7 +187,7 @@ const browserEntrySource = read("artifacts/api-server/src/lib/browser/index.ts")
       'ruleId: "ACT-R24", type: "Potential Issue"',
     );
     expect(browserSource).toContain(
-      "the browser engine cannot verify completeness or equivalence",
+      "Its completeness cannot be",
     );
     expect(browserSource).toContain(
       "if (!EMIT_MANUAL_ONLY_RULES) return;",
@@ -153,14 +227,14 @@ const browserEntrySource = read("artifacts/api-server/src/lib/browser/index.ts")
     ).toContain('id: "ACT-R128"');
   });
 
-  it("enables manual-only emission when an API scan explicitly selects ACT-R118", () => {
+  it("enables manual-only emission when an API scan explicitly selects a manual review rule", () => {
     const scannerSource = read("artifacts/api-server/src/lib/scanner.ts");
     expect(browserEntrySource).toContain(
       "options: { emitManualOnlyRules?: boolean } = {}",
     );
-    expect(scannerSource).toContain(
-      'options.rules?.some((rule) => rule.toUpperCase() === "ACT-R118")',
-    );
+    expect(scannerSource).toContain('["ACT-R24", "ACT-R118"].includes');
+    expect(scannerSource).toContain('selectedRuleSet.has("ACT-R24")');
+    expect(scannerSource).toContain('selectedRuleSet.has("ACT-R118")');
     expect(scannerSource).toContain(
       "runAllRules(options)",
     );
@@ -185,6 +259,11 @@ const browserEntrySource = read("artifacts/api-server/src/lib/browser/index.ts")
     expect(scannerSource).toContain("img.naturalWidth === 0");
     expect(scannerSource).toContain('el.getAttribute("data-original")');
     expect(scannerSource).toContain("explicitly preload each visual URL");
+    expect(scannerSource).toContain("let allowMediaMetadata = false");
+    expect(scannerSource).toContain(
+      '(type === "media" && !allowMediaMetadata)',
+    );
+    expect(scannerSource).toContain('video.preload = "metadata"');
     expect(scannerSource).toContain(
       'type === "image" && !allowVisualImages',
     );

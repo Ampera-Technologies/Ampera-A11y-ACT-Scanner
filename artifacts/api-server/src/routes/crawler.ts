@@ -60,6 +60,10 @@ const crawlerPageColumns = {
   contentHash: crawlerPagesTable.contentHash, httpStatus: crawlerPagesTable.httpStatus, issueCount: crawlerPagesTable.issueCount,
   ruleCount: crawlerPagesTable.ruleCount, pageType: crawlerPagesTable.pageType, errorMessage: crawlerPagesTable.errorMessage,
   scannedAt: crawlerPagesTable.scannedAt, capturedHtml: crawlerPagesTable.capturedHtml,
+  discoveryAttempts: crawlerPagesTable.discoveryAttempts,
+  discoveryLastAttemptAt: crawlerPagesTable.discoveryLastAttemptAt,
+  discoveryNextAttemptAt: crawlerPagesTable.discoveryNextAttemptAt,
+  discoveryLastError: crawlerPagesTable.discoveryLastError,
 };
 const brokenLinkColumns = {
   id: brokenLinksTable.id, sessionId: brokenLinksTable.sessionId, sourceUrl: brokenLinksTable.sourceUrl, brokenUrl: brokenLinksTable.brokenUrl,
@@ -144,6 +148,21 @@ function getAuthUserId(req: any): string {
 function isAdminUser(req: any): boolean {
   const role = req.session?.user?.role;
   return role === "super_admin" || role === "admin";
+}
+
+function getConfiguredDiscoveryLimits(config: CrawlerConfig): { highWatermark: number; lowWatermark: number } {
+  const maxPages = Math.max(1, Math.floor(config.maxPages || 1));
+  const high = Math.min(
+    maxPages,
+    Math.max(1, Math.floor(config.discoveryQueueHighWatermark ?? Math.min(100, maxPages))),
+  );
+  return {
+    highWatermark: high,
+    lowWatermark: Math.min(
+      high - 1,
+      Math.max(0, Math.floor(config.discoveryQueueLowWatermark ?? Math.floor(high / 2))),
+    ),
+  };
 }
 
 /**
@@ -245,7 +264,7 @@ function validateCreateCrawler(body: any): { data: any; error?: string } {
       return { data: null, error: "Each path filter must be a string of 500 characters or fewer" };
     }
     const normalized = Array.from(
-      new Set(body.localePatterns.map((pattern: string) => pattern.trim()).filter(Boolean)),
+      new Set<string>((body.localePatterns as string[]).map((pattern) => pattern.trim()).filter(Boolean)),
     );
     localePatterns = normalized.length > 0 ? normalized : undefined;
   }
@@ -268,6 +287,16 @@ function validateCreateCrawler(body: any): { data: any; error?: string } {
       tabPoolSize: typeof body.tabPoolSize === "number" ? Math.min(5, Math.max(1, body.tabPoolSize)) : 1,
       scanDelayMs: typeof body.scanDelayMs === "number" ? Math.min(100000, Math.max(0, body.scanDelayMs)) : 10000,
       discoveryWorkers: typeof body.discoveryWorkers === "number" ? Math.min(4, Math.max(1, Math.floor(body.discoveryWorkers))) : 2,
+      discoveryQueueHighWatermark: typeof body.discoveryQueueHighWatermark === "number"
+        ? Math.min(10000, Math.max(1, Math.floor(body.discoveryQueueHighWatermark))) : undefined,
+      discoveryQueueLowWatermark: typeof body.discoveryQueueLowWatermark === "number"
+        ? Math.min(9999, Math.max(0, Math.floor(body.discoveryQueueLowWatermark))) : undefined,
+      discoveryMaxAttempts: typeof body.discoveryMaxAttempts === "number"
+        ? Math.min(8, Math.max(1, Math.floor(body.discoveryMaxAttempts))) : undefined,
+      discoveryRetryBaseDelayMs: typeof body.discoveryRetryBaseDelayMs === "number"
+        ? Math.min(60000, Math.max(100, Math.floor(body.discoveryRetryBaseDelayMs))) : undefined,
+      discoveryRetryMaxDelayMs: typeof body.discoveryRetryMaxDelayMs === "number"
+        ? Math.min(300000, Math.max(100, Math.floor(body.discoveryRetryMaxDelayMs))) : undefined,
       proxyPacUrl,
       authenticated: body.authenticated === true,
       authUrl: body.authUrl,
@@ -382,6 +411,11 @@ router.post("/crawler/sessions", requireAuth, async (req: Request, res: Response
     tabPoolSize: data.tabPoolSize,
     scanDelayMs: data.scanDelayMs,
     discoveryWorkers: data.discoveryWorkers,
+    discoveryQueueHighWatermark: data.discoveryQueueHighWatermark,
+    discoveryQueueLowWatermark: data.discoveryQueueLowWatermark,
+    discoveryMaxAttempts: data.discoveryMaxAttempts,
+    discoveryRetryBaseDelayMs: data.discoveryRetryBaseDelayMs,
+    discoveryRetryMaxDelayMs: data.discoveryRetryMaxDelayMs,
     proxyPacUrl: data.proxyPacUrl,
     authenticated: data.authenticated,
     authUrl: data.authUrl,
@@ -521,6 +555,7 @@ router.get("/crawler/sessions/:id", requireAuth, async (req: Request, res: Respo
 
   const safeConfig = { ...(session.config as any) };
   delete safeConfig.authPassword;
+  const discoveryLimits = getConfiguredDiscoveryLimits(session.config as CrawlerConfig);
   const triggeredByUsers = await getTriggeredByUsers([session.userId]);
 
   let pagesWithIssues = 0;
@@ -554,12 +589,18 @@ router.get("/crawler/sessions/:id", requireAuth, async (req: Request, res: Respo
   // Uses pool.query (raw SQL) to avoid adding an extra Drizzle chain that the
   // test mock does not expect, while staying consistent with the other count queries above.
   let pendingPages = 0;
+  let discoveryQueueDepth = 0;
   try {
     const pendingResult = await pool.query<{ cnt: string }>(
       `SELECT COUNT(*)::text AS cnt FROM crawler_pages WHERE session_id = $1 AND status = 'pending'`,
       [sessionId],
     );
     pendingPages = parseInt(pendingResult.rows[0]?.cnt || "0", 10);
+    const readyResult = await pool.query<{ cnt: string }>(
+      `SELECT COUNT(*)::text AS cnt FROM crawler_pages WHERE session_id = $1 AND status = 'discovered'`,
+      [sessionId],
+    );
+    discoveryQueueDepth = parseInt(readyResult.rows[0]?.cnt || "0", 10);
   } catch {
     // Non-critical: default to 0 if the count query is unavailable.
   }
@@ -570,6 +611,11 @@ router.get("/crawler/sessions/:id", requireAuth, async (req: Request, res: Respo
     config: safeConfig,
     pagesWithIssues,
     pendingPages,
+    discoveryQueueDepth,
+    discoveryThrottled: ["discovering", "scanning"].includes(session.status)
+      && safeConfig.discoveryBackpressure?.throttled === true,
+    discoveryQueueHighWatermark: safeConfig.discoveryBackpressure?.highWatermark ?? discoveryLimits.highWatermark,
+    discoveryQueueLowWatermark: safeConfig.discoveryBackpressure?.lowWatermark ?? discoveryLimits.lowWatermark,
     crawlBoost: !!(session.config as any)?.crawlBoost,
   });
 });
@@ -862,6 +908,7 @@ router.get("/crawler/sessions/:id/progress", requireAuth, async (req: Request, r
 
     const safeConfig = { ...(session.config as any) };
     delete safeConfig.authPassword;
+    const discoveryLimits = getConfiguredDiscoveryLimits(session.config as CrawlerConfig);
     const triggeredByUsers = await getTriggeredByUsers([session.userId]);
 
     const [pending] = await db.select({ cnt: sql<number>`count(*)::int` })
@@ -885,6 +932,11 @@ router.get("/crawler/sessions/:id/progress", requireAuth, async (req: Request, r
       config: safeConfig,
       crawlBoost: !!(session.config as any)?.crawlBoost,
       pendingPages: pending?.cnt ?? 0,
+      discoveryQueueDepth: discovered?.cnt ?? 0,
+      discoveryThrottled: ["discovering", "scanning"].includes(session.status)
+        && safeConfig.discoveryBackpressure?.throttled === true,
+      discoveryQueueHighWatermark: safeConfig.discoveryBackpressure?.highWatermark ?? discoveryLimits.highWatermark,
+      discoveryQueueLowWatermark: safeConfig.discoveryBackpressure?.lowWatermark ?? discoveryLimits.lowWatermark,
       scanningPages: inProgress?.cnt ?? 0,
       discoveredPages: discovered?.cnt ?? 0,
     });

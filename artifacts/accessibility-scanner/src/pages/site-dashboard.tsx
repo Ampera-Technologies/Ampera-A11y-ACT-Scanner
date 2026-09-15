@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -567,6 +568,27 @@ export default function SiteDashboard({ siteId }: Props) {
                   </div>
                 )}
               </article>
+              {d.coverage?.confidence && (
+                <article className="rounded-[20px] border border-border/70 bg-card/80 p-4" aria-label="Scan evidence confidence">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">Scan evidence confidence</h3>
+                      <p className="mt-1 text-xs text-muted-foreground">Separate from the accessibility score; based on completed pages and rule applicability.</p>
+                    </div>
+                    <Badge variant="outline" className="capitalize">{d.coverage.confidence.classification}</Badge>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+                    <span><strong className="text-foreground">{d.coverage.automaticApplicabilityCoverage ?? 0}%</strong> automatic coverage</span>
+                    <span><strong className="text-foreground">{d.coverage.confidence.manualUnresolved}</strong> manual review</span>
+                    <span><strong className="text-foreground">{d.coverage.confidence.fallbackDenominatorPages}</strong> fallback pages</span>
+                    <span><strong className="text-foreground">{d.coverage.confidence.carriedForwardPages}</strong> carried forward</span>
+                  </div>
+                  <details className="mt-3 text-xs text-muted-foreground">
+                    <summary className="cursor-pointer font-medium text-foreground">How this classification was determined</summary>
+                    <ul className="mt-2 list-disc space-y-1 pl-4">{d.coverage.confidence.basis.map((item) => <li key={item}>{item}</li>)}</ul>
+                  </details>
+                </article>
+              )}
             </section>
 
             {/* Restore the live remediation workflow before the newer analytical sections. */}

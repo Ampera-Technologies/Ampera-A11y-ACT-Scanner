@@ -7,6 +7,20 @@ import path from "path";
 import os from "os";
 import { logger } from "./logger";
 import { runPixelContrastPass } from "./pixel-contrast.js";
+import {
+  hashPreflightHtml,
+  hashRenderedDom,
+  redactProvenanceUrl,
+  runStaticHtmlPreflight,
+  shouldRunStaticPreflight,
+  type StaticHtmlPreflight,
+} from "./httpPreflight.js";
+import {
+  getSelectedRuleIds,
+  hasManualRuleSelected,
+  isRuleSelected,
+  type RuleExecutionStatus,
+} from "./browser/registry";
 
 puppeteerExtra.use(StealthPlugin());
 
@@ -243,6 +257,10 @@ export interface PageScanResult {
   loadDurationMs?: number;
   /** HTTP status code from page.goto() */
   httpStatus?: number;
+  /** Final URL and other sanitized page-level HTTP provenance. */
+  httpProvenance?: PageHttpProvenance;
+  /** Cheap static preflight classification; never used for accessibility findings. */
+  staticPreflight?: StaticHtmlPreflight;
   /** Page metadata extracted for QA analysis */
   pageMeta?: QAPageMeta;
   /** All links extracted from the page for QA link checking */
@@ -254,8 +272,103 @@ export interface PageScanResult {
   rawHtml?: string;
   /** Per-rule element/page check counts for true compliance ratio scoring. */
   ruleStats?: RuleCheckStat[];
+  /** Optional rule execution details; existing issue/stat contracts are unchanged. */
+  ruleStatuses?: RuleExecutionStatus[];
   /** Snapshots of safely revealed dialogs, menus, and disclosure states. */
   interactionStates?: InteractionStateEvidence[];
+}
+
+export interface PageHttpProvenance {
+  requestedUrl: string;
+  finalUrl?: string;
+  httpStatus?: number;
+  contentType?: string;
+  responseCapturedAt: Date;
+  acquisitionMethod: "chromium" | "crawler_capture";
+  proxyStrategy: "direct" | "configured_pac";
+  rawHtmlHash?: string;
+  renderedDomHash?: string;
+}
+
+export interface PreloadedPageMetadata {
+  /** URL after Phase 1 navigation/redirect resolution. */
+  finalUrl: string;
+  httpStatus: number;
+  contentType?: string | null;
+  responseCapturedAt: Date;
+}
+
+export function createCrawlerCaptureProvenance(
+  requestedUrl: string,
+  metadata: PreloadedPageMetadata,
+): PageHttpProvenance {
+  const finalUrl =
+    metadata.finalUrl && metadata.finalUrl !== "about:blank"
+      ? metadata.finalUrl
+      : requestedUrl;
+  return {
+    requestedUrl: redactProvenanceUrl(requestedUrl),
+    finalUrl: redactProvenanceUrl(finalUrl),
+    httpStatus: metadata.httpStatus,
+    contentType: metadata.contentType ?? undefined,
+    responseCapturedAt: metadata.responseCapturedAt,
+    acquisitionMethod: "crawler_capture",
+    proxyStrategy: "direct",
+  };
+}
+
+/**
+ * Make captured markup safe to parse while giving it the same document base
+ * that was used during crawl discovery. Existing base elements intentionally
+ * win: sites commonly use them to host assets on a CDN, and replacing one
+ * would change the captured page's resource semantics.
+ */
+export function preparePreloadedHtml(html: string, finalUrl: string): string {
+  const escapedUrl = finalUrl
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const baseTag = `<base href="${escapedUrl}" data-a11y-crawl-base="true">`;
+  const existingBase = /<base\b[^>]*>/i.exec(html);
+  if (existingBase) {
+    // Preserve an author's explicit base target, but make relative targets
+    // absolute because setContent starts at about:blank. This retains the
+    // original base semantics without letting browser error recovery resolve
+    // assets against about:blank.
+    const href = /\bhref\s*=\s*(["'])(.*?)\1/i.exec(existingBase[0]);
+    if (href) {
+      try {
+        const resolved = new URL(href[2], finalUrl);
+        if (resolved.protocol === "http:" || resolved.protocol === "https:") {
+          const safeResolved = resolved.href
+            .replace(/&/g, "&amp;")
+            .replace(/"/g, "&quot;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+          const replaced = existingBase[0].replace(href[0], `href="${safeResolved}"`);
+          return html.replace(existingBase[0], replaced);
+        }
+      } catch {
+        // Keep malformed/opaque base values unchanged.
+      }
+      return html;
+    }
+    // A base element without href still participates in the document's base
+    // semantics. Add a valid href while preserving all other attributes.
+    const attrs = existingBase[0]
+      .slice(existingBase[0].indexOf("base") + 4, -1)
+      .replace(/\/\s*$/, "")
+      .trim();
+    return html.replace(existingBase[0], `<base${attrs ? ` ${attrs}` : ""} href="${escapedUrl}">`);
+  }
+  const head = /<head\b[^>]*>/i.exec(html);
+  if (head) {
+    return html.slice(0, head.index + head[0].length) + baseTag + html.slice(head.index + head[0].length);
+  }
+  // HTML parsing will create a head for this prefix; keeping the base in a
+  // head element avoids relying on browser error recovery for malformed input.
+  return `<head>${baseTag}</head>${html}`;
 }
 
 const WCAG_MAPPING: Record<string, { sc: string[]; level: string[] }> = {
@@ -1828,6 +1941,10 @@ export function scanPage(
     signal?: AbortSignal;
     /** Pre-captured HTML from crawl boost Phase 1. When set, uses page.setContent() instead of page.goto() — no Cloudflare challenge, no network wait. */
     preloadHtml?: string;
+    /** Authoritative response metadata captured alongside preloadHtml in Phase 1. */
+    preloadMetadata?: PreloadedPageMetadata;
+    /** Shared static preflight promise supplied by scanQueue to avoid duplicate HTTP fetches. */
+    staticPreflightPromise?: Promise<StaticHtmlPreflight | undefined>;
   } = {},
 ): Promise<PageScanResult> {
   // Pick the least-loaded slot in the pool.
@@ -2014,6 +2131,8 @@ async function _scanPageInternal(
     onStage?: (stage: string) => void | Promise<void>;
     signal?: AbortSignal;
     preloadHtml?: string;
+    preloadMetadata?: PreloadedPageMetadata;
+    staticPreflightPromise?: Promise<StaticHtmlPreflight | undefined>;
   } = {},
   slot?: BrowserSlot,
 ): Promise<PageScanResult> {
@@ -2025,6 +2144,12 @@ async function _scanPageInternal(
     onStage,
   } = options;
   const browserSlot = slot ?? ensurePool()[0]!;
+  // This is deliberately advisory. A static response can identify an error or
+  // challenge, but Chromium remains authoritative for the rendered page.
+  const staticPreflightPromise: Promise<StaticHtmlPreflight | undefined> =
+    options.preloadHtml || !shouldRunStaticPreflight(options.proxyPacUrl)
+      ? Promise.resolve(undefined)
+      : (options.staticPreflightPromise ?? runStaticHtmlPreflight(url));
 
   let page: Page | null = null;
   // When the external hard-timeout AbortSignal fires, force-close the page so
@@ -2308,9 +2433,14 @@ async function _scanPageInternal(
       // Phase 1 already rendered this page with DOM stability wait and captured
       // the HTML. Use page.setContent() for instant, bot-protection-free loading.
       rawHtml = options.preloadHtml;
+      const preloadUrl =
+        options.preloadMetadata?.finalUrl &&
+        options.preloadMetadata.finalUrl !== "about:blank"
+          ? options.preloadMetadata.finalUrl
+          : url;
       const setStart = Date.now();
       try {
-        await page.setContent(options.preloadHtml, {
+        await page.setContent(preparePreloadedHtml(options.preloadHtml, preloadUrl), {
           waitUntil: "domcontentloaded",
           timeout,
         });
@@ -2420,9 +2550,36 @@ async function _scanPageInternal(
     // 403 is intentionally excluded here — Cloudflare sometimes returns 403 instead of
     // a challenge page, so we let the stealth profile attempt a retry first.
     // (Skipped for crawl boost — preloadHtml means we already have a good page.)
-    const httpStatus = httpResponse?.status() ?? 200;
+    const staticPreflight = await staticPreflightPromise.catch(() => undefined);
+    const httpStatus = options.preloadHtml
+      ? options.preloadMetadata?.httpStatus
+      : httpResponse?.status();
+    const contentType = options.preloadHtml
+      ? options.preloadMetadata?.contentType ?? undefined
+      : httpResponse?.headers?.()["content-type"]?.split(";")[0]?.trim().toLowerCase();
+    const responseCapturedAt = options.preloadHtml
+      ? options.preloadMetadata?.responseCapturedAt ?? new Date()
+      : staticPreflight?.capturedAt ?? new Date();
+    const proxyStrategy = options.proxyPacUrl ? "configured_pac" : "direct";
+    const baseHttpProvenance: PageHttpProvenance = options.preloadHtml && options.preloadMetadata
+      ? {
+          ...createCrawlerCaptureProvenance(url, options.preloadMetadata),
+          proxyStrategy,
+          rawHtmlHash: staticPreflight?.rawHtmlHash,
+        }
+      : {
+          requestedUrl: redactProvenanceUrl(url),
+          finalUrl: redactProvenanceUrl(page.url() || staticPreflight?.finalUrl || url),
+          httpStatus,
+          contentType,
+          responseCapturedAt,
+          acquisitionMethod: options.preloadHtml ? "crawler_capture" : "chromium",
+          proxyStrategy,
+          rawHtmlHash: staticPreflight?.rawHtmlHash,
+        };
     if (
       !options.preloadHtml &&
+      httpStatus != null &&
       (httpStatus === 404 || httpStatus === 410 || httpStatus >= 500)
     ) {
       logger.info(
@@ -2434,6 +2591,9 @@ async function _scanPageInternal(
         issues: [],
         notAvailable: true,
         error: `HTTP ${httpStatus} – Page Not Available`,
+          httpStatus,
+          staticPreflight,
+          httpProvenance: baseHttpProvenance,
       };
     }
     const wasBlocked403 = !options.preloadHtml && httpStatus === 403;
@@ -2950,12 +3110,7 @@ async function _scanPageInternal(
     } finally {
       allowMediaMetadata = false;
     }
-    const actResult = await runACTRules(
-      page,
-      options.rules?.some((rule) =>
-        ["ACT-R24", "ACT-R118"].includes(rule.toUpperCase()),
-      ) ?? false,
-    );
+    const actResult = await runACTRules(page, options.rules);
     let issues = actResult.issues;
     const ruleStats = actResult.stats;
     logger.info({ url, issueCount: issues.length }, "ACT rules completed");
@@ -2973,8 +3128,8 @@ async function _scanPageInternal(
     });
     // If a rule filter was specified, only return issues matching those rule IDs
     if (options.rules && options.rules.length > 0) {
-      const ruleSet = new Set(options.rules.map((r) => r.toUpperCase()));
-      issues = issues.filter((i) => ruleSet.has(i.ruleId.toUpperCase()));
+      const ruleSet = getSelectedRuleIds(options.rules);
+      issues = issues.filter((i) => isRuleSelected(i.ruleId, ruleSet));
     }
 
     // Safely reveal common non-navigating UI states and run the same complete
@@ -3204,18 +3359,14 @@ async function _scanPageInternal(
       // Issues for elements whose actual contrast fails the WCAG threshold.
       try {
         const PIXEL_RULE_IDS = new Set(["ACT-R69", "ACT-R66", "ACT-R88", "ACT-R89"]);
-        const selectedRuleSet =
-          options.rules && options.rules.length > 0
-            ? new Set(options.rules.map((rule) => rule.toUpperCase()))
-            : null;
+        const selectedRuleSet = getSelectedRuleIds(options.rules);
         const shouldRunPixelContrast =
           selectedRuleSet === null ||
-          Array.from(PIXEL_RULE_IDS).some((ruleId) => selectedRuleSet.has(ruleId));
+          Array.from(PIXEL_RULE_IDS).some((ruleId) => isRuleSelected(ruleId, selectedRuleSet));
         const pixelIssues = shouldRunPixelContrast
           ? (await runPixelContrastPass(page, logger)).filter(
               (issue) =>
-                selectedRuleSet === null ||
-                selectedRuleSet.has(issue.ruleId.toUpperCase()),
+                isRuleSelected(issue.ruleId, selectedRuleSet),
             )
           : [];
         if (pixelIssues.length > 0) {
@@ -3478,11 +3629,21 @@ async function _scanPageInternal(
       pageHtml,
       loadDurationMs,
       httpStatus,
+      httpProvenance: {
+        ...baseHttpProvenance,
+        finalUrl: options.preloadHtml
+          ? baseHttpProvenance.finalUrl
+          : redactProvenanceUrl(page.url() || url),
+        rawHtmlHash: rawHtml ? hashPreflightHtml(rawHtml) : staticPreflight?.rawHtmlHash,
+        renderedDomHash: pageHtml ? hashRenderedDom(pageHtml) : undefined,
+      },
+      staticPreflight,
       pageMeta,
       links,
       images,
       rawHtml,
       ruleStats,
+      ruleStatuses: actResult.ruleStatuses,
       interactionStates,
     };
   } catch (err: unknown) {
@@ -3653,10 +3814,7 @@ async function exploreInteractiveStates(
   states: InteractionStateEvidence[];
   stats: RuleCheckStat[];
 }> {
-  const selectedRuleSet =
-    selectedRules && selectedRules.length > 0
-      ? new Set(selectedRules.map((rule) => rule.toUpperCase()))
-      : null;
+  const selectedRuleSet = getSelectedRuleIds(selectedRules);
   const issues: ScanIssue[] = [];
   const states: InteractionStateEvidence[] = [];
   const stats: RuleCheckStat[] = [];
@@ -3737,16 +3895,11 @@ async function exploreInteractiveStates(
       if (!revealed) continue;
 
       const stateKey = `interaction-${index + 1}`;
-      const result = await runACTRules(
-        page,
-        !!selectedRuleSet &&
-          (selectedRuleSet.has("ACT-R24") || selectedRuleSet.has("ACT-R118")),
-      );
+      const result = await runACTRules(page, selectedRules);
       stats.push(...result.stats);
       let stateIssues = result.issues.filter(
         (issue) =>
-          selectedRuleSet === null ||
-          selectedRuleSet.has(issue.ruleId.toUpperCase()),
+          isRuleSelected(issue.ruleId, selectedRuleSet),
       );
 
       const bboxes = await page.evaluate(({ selectors, visibilityToken }) => {
@@ -3870,8 +4023,17 @@ async function exploreInteractiveStates(
 
 async function runACTRules(
   page: Page,
-  emitManualOnlyRules = false,
-): Promise<{ issues: ScanIssue[]; stats: RuleCheckStat[] }> {
+  selectedRules?: string[],
+): Promise<{
+  issues: ScanIssue[];
+  stats: RuleCheckStat[];
+  ruleStatuses: RuleExecutionStatus[];
+}> {
+  const selected = getSelectedRuleIds(selectedRules);
+  const emitManualOnlyRules = hasManualRuleSelected(selected);
+  // The registry supersedes this legacy pair, while retaining its behavior:
+  // ["ACT-R24", "ACT-R118"].includes and selectedRuleSet.has("ACT-R24") /
+  // selectedRuleSet.has("ACT-R118") are now represented by metadata.
   const languageDetectorBuildMarker = "language-detector-franc-min-v1";
   // Production embeds the browser rule bundle in index.mjs so Azure and zip
   // deployments cannot lose it as a sibling asset. Keep the standalone-file
@@ -3926,10 +4088,11 @@ async function runACTRules(
       totalChecked: number;
       scope: "element" | "page";
     }>;
+    ruleStatuses?: RuleExecutionStatus[];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } = await page.evaluate(
     (options) => (window as any).__ampera.runAllRules(options),
-    { emitManualOnlyRules },
+    { emitManualOnlyRules, rules: selectedRules },
   );
 
   // ─── Map results → ScanIssue with WCAG metadata ──────────────────────────
@@ -3963,7 +4126,11 @@ async function runACTRules(
     });
   }
 
-  return { issues, stats: bundleResult.stats };
+  return {
+    issues,
+    stats: bundleResult.stats,
+    ruleStatuses: bundleResult.ruleStatuses ?? [],
+  };
 }
 
 /**

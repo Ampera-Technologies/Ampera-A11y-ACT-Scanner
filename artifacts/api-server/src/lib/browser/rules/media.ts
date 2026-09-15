@@ -3,6 +3,23 @@ import { getAccessibleName } from "../accname";
 import { elementContextForAI, getSelector, outerHtmlSnippet } from "../dom-helpers";
 import { isProgrammaticallyHidden, isVisible } from "../visibility";
 
+export function classifyMissingCaptions(
+  audioState: boolean | "unknown",
+  hasCaptions: boolean,
+): "Issue" | "Potential Issue" | null {
+  if (hasCaptions || audioState === false) return null;
+  return audioState === true ? "Issue" : "Potential Issue";
+}
+
+export function classifyR37Candidate(
+  silentState: boolean | "unknown",
+  hasDescriptionTrack: boolean,
+  hasMediaAlternativeForText: boolean,
+): "Potential Issue" | null {
+  if (silentState === true || hasDescriptionTrack || hasMediaAlternativeForText) return null;
+  return "Potential Issue";
+}
+
 export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: boolean, pushStat: PushStatFn): void {
   const getMediaSources = (media: HTMLMediaElement): HTMLSourceElement[] =>
     Array.from(media.querySelectorAll("source"));
@@ -214,6 +231,36 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
     }
   });
 
+  // ACT-R22: Video with audio has synchronized captions (WCAG 1.2.2)
+  document.querySelectorAll("video").forEach((video) => {
+    if (!(video instanceof HTMLVideoElement) || !isApplicableVideo(video)) return;
+    const hasTrackCaptions = !!video.querySelector('track[kind="captions"], track[kind="subtitles"]');
+    const hasTextTrackCaptions = Array.from(video.textTracks || []).some(
+      (track) => track.kind === "captions" || track.kind === "subtitles",
+    );
+    const videoJsContainer = video.closest(".video-js");
+    const hasVideoJsCaptions = !!videoJsContainer?.querySelector(
+      ".vjs-subs-caps-button:not(.vjs-hidden), .vjs-subtitles-button:not(.vjs-hidden)",
+    );
+    const audioState = hasDeclaredAudioTrack(video);
+    const findingType = classifyMissingCaptions(
+      audioState,
+      hasTrackCaptions || hasTextTrackCaptions || hasVideoJsCaptions,
+    );
+    if (!findingType) return;
+    results.push({
+      ruleId: "ACT-R22",
+      type: findingType,
+      impact: "serious",
+      description: findingType === "Issue"
+        ? "Video contains audio but has no synchronized captions track"
+        : "Video has no synchronized captions track; review whether the video contains audio that requires captions",
+      element: outerHtmlSnippet(video),
+      elementContext: elementContextForAI(video),
+      selector: getSelector(video),
+    });
+  });
+
   // ════════════════════════════════════════════════════════════════════════
   // ACT-R27: Video element auditory content has accessible alternative
   // ════════════════════════════════════════════════════════════════════════
@@ -272,17 +319,22 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
   // by R25 or the media-alternative-for-text path represented by R31 passes.
   document.querySelectorAll("video").forEach((video) => {
     if (!(video instanceof HTMLVideoElement) || !isApplicableVideo(video)) return;
-    if (isVideoWithoutAudio(video) !== false) return;
+    const silentState = isVideoWithoutAudio(video);
     const tracks = Array.from(video.textTracks || []);
     const hasDescriptionTrack =
       !!video.querySelector('track[kind="descriptions"]') ||
       tracks.some((track: any) => track.kind === "descriptions") ||
       !!video.closest(".video-js")?.querySelector(".vjs-descriptions-button:not(.vjs-disabled):not(.vjs-hidden)");
     const passesMediaAlternativeForText = hasVisibleAccessibleAlternative(video);
-    if (hasDescriptionTrack || passesMediaAlternativeForText) return;
+    const findingType = classifyR37Candidate(
+      silentState,
+      hasDescriptionTrack,
+      passesMediaAlternativeForText,
+    );
+    if (!findingType) return;
     results.push({
       ruleId: "ACT-R37",
-      type: "Potential Issue",
+      type: findingType,
       impact: "serious",
       description: "Review whether the video's visual content has a strict accessible alternative through audio description or a complete media alternative for text",
       element: outerHtmlSnippet(video),
@@ -466,6 +518,7 @@ export function runMediaRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: 
       return rect.width >= 20 && rect.height >= 20;
     })()).length;
   if (applicableVideoEls > 0) {
+    pushStat("ACT-R22", applicableVideoEls, "element");
     pushStat("ACT-R27", applicableVideoEls, "element");
     pushStat("ACT-R37", applicableVideoEls, "element");
   }

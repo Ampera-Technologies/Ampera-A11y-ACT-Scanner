@@ -275,6 +275,35 @@ export const GetScanResponse = zod.object({
       scannedAt: zod.string().nullable(),
       loadDurationMs: zod.number().nullable(),
       scanDurationMs: zod.number().nullable(),
+      finalUrl: zod.string().nullish(),
+      httpStatus: zod.number().nullish(),
+      contentType: zod.string().nullish(),
+      responseCapturedAt: zod.string().nullish(),
+      acquisitionMethod: zod.string().nullish(),
+      proxyStrategy: zod.string().nullish(),
+      rawHtmlHash: zod.string().nullish(),
+      renderedDomHash: zod.string().nullish(),
+      carriedForward: zod
+        .boolean()
+        .optional()
+        .describe(
+          "Whether this page's evidence was carried forward from a scoped prior scan.",
+        ),
+      ruleStatuses: zod
+        .array(
+          zod.object({
+            ruleId: zod.string(),
+            status: zod.enum([
+              "not-selected",
+              "not-applicable",
+              "executed",
+              "failed",
+            ]),
+            executionTier: zod.enum(["automatic", "manual"]),
+            carriedForward: zod.boolean().optional(),
+          }),
+        )
+        .optional(),
       issues: zod.array(
         zod.object({
           id: zod.number(),
@@ -333,6 +362,35 @@ export const GetScanResponse = zod.object({
       ),
     }),
   ),
+  ruleCoverage: zod
+    .array(
+      zod.object({
+        ruleId: zod.string(),
+        selected: zod.number(),
+        notSelected: zod.number(),
+        notApplicable: zod.number(),
+        executed: zod.number(),
+        manual: zod.number(),
+        failed: zod.number(),
+        executionTier: zod.enum(["automatic", "manual"]),
+      }),
+    )
+    .optional(),
+  automaticApplicabilityCoverage: zod.number().optional(),
+  confidence: zod
+    .object({
+      classification: zod.enum(["high", "medium", "low", "unavailable"]),
+      score: zod.number().nullable(),
+      basis: zod.array(zod.string()),
+      completedPages: zod.number(),
+      failedPages: zod.number(),
+      automaticApplicabilityCoverage: zod.number(),
+      manualUnresolved: zod.number(),
+      potentialUnresolved: zod.number(),
+      fallbackDenominatorPages: zod.number(),
+      carriedForwardPages: zod.number(),
+    })
+    .optional(),
 });
 
 /**
@@ -481,6 +539,35 @@ export const GetScanReportResponse = zod.object({
       criticalCount: zod.number(),
     }),
   ),
+  ruleCoverage: zod
+    .array(
+      zod.object({
+        ruleId: zod.string(),
+        selected: zod.number(),
+        notSelected: zod.number(),
+        notApplicable: zod.number(),
+        executed: zod.number(),
+        manual: zod.number(),
+        failed: zod.number(),
+        executionTier: zod.enum(["automatic", "manual"]),
+      }),
+    )
+    .optional(),
+  automaticApplicabilityCoverage: zod.number().optional(),
+  confidence: zod
+    .object({
+      classification: zod.enum(["high", "medium", "low", "unavailable"]),
+      score: zod.number().nullable(),
+      basis: zod.array(zod.string()),
+      completedPages: zod.number(),
+      failedPages: zod.number(),
+      automaticApplicabilityCoverage: zod.number(),
+      manualUnresolved: zod.number(),
+      potentialUnresolved: zod.number(),
+      fallbackDenominatorPages: zod.number(),
+      carriedForwardPages: zod.number(),
+    })
+    .optional(),
 });
 
 /**

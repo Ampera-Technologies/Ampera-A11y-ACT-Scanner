@@ -7,6 +7,7 @@
  */
 import type { AccessibilityIssue } from "./accessibilityIssue";
 import type { PageResultStatus } from "./pageResultStatus";
+import type { RuleExecutionStatus } from "./ruleExecutionStatus";
 
 export interface PageResult {
   id: number;
@@ -28,5 +29,24 @@ export interface PageResult {
   loadDurationMs: number | null;
   /** @nullable */
   scanDurationMs: number | null;
+  /** @nullable */
+  finalUrl?: string | null;
+  /** @nullable */
+  httpStatus?: number | null;
+  /** @nullable */
+  contentType?: string | null;
+  /** @nullable */
+  responseCapturedAt?: string | null;
+  /** @nullable */
+  acquisitionMethod?: string | null;
+  /** @nullable */
+  proxyStrategy?: string | null;
+  /** @nullable */
+  rawHtmlHash?: string | null;
+  /** @nullable */
+  renderedDomHash?: string | null;
+  /** Whether this page's evidence was carried forward from a scoped prior scan. */
+  carriedForward?: boolean;
+  ruleStatuses?: RuleExecutionStatus[];
   issues: AccessibilityIssue[];
 }

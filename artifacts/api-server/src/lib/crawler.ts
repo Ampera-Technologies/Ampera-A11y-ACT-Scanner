@@ -24,8 +24,28 @@ import {
 import { runCrawlPostProcessing } from "./crawlProcessor";
 import { eq, and, inArray, lte, sql } from "drizzle-orm";
 import { scanPage, fetchRawHtmlViaBrowser } from "./scanner";
+import { redactProvenanceUrl } from "./httpPreflight";
 import { fetchSitemapUrls } from "./sitemap";
 import { logger } from "./logger";
+import { getRuleExecutionStatuses, getSelectedRuleIds, type RuleExecutionStatus } from "./browser/registry";
+import { tryCarryForward } from "./scanQueue";
+
+async function persistCrawlerRuleStatuses(
+  pageId: number,
+  statuses: readonly RuleExecutionStatus[],
+): Promise<void> {
+  if (!statuses.length) return;
+  const values = statuses.map((status) =>
+    `(${pageId}, '${status.ruleId.replace(/'/g, "''")}', '${status.status}', '${status.executionTier}', false)`,
+  ).join(",");
+  await pool.query(
+    `INSERT INTO rule_execution_statuses
+       (page_result_id, rule_id, status, execution_tier, carried_forward)
+     VALUES ${values}
+     ON CONFLICT (page_result_id, rule_id) DO UPDATE SET
+       status = EXCLUDED.status, execution_tier = EXCLUDED.execution_tier`,
+  );
+}
 
 const crawlerDiscoveryCacheFields = {
   id: crawlerDiscoveryCacheTable.id,
@@ -46,17 +66,25 @@ const crawlerPageFields = {
   discoveredFrom: crawlerPagesTable.discoveredFrom,
   contentHash: crawlerPagesTable.contentHash,
   httpStatus: crawlerPagesTable.httpStatus,
+  finalUrl: crawlerPagesTable.finalUrl,
+  contentType: crawlerPagesTable.contentType,
+  responseCapturedAt: crawlerPagesTable.responseCapturedAt,
   issueCount: crawlerPagesTable.issueCount,
   ruleCount: crawlerPagesTable.ruleCount,
   pageType: crawlerPagesTable.pageType,
   errorMessage: crawlerPagesTable.errorMessage,
   scannedAt: crawlerPagesTable.scannedAt,
   capturedHtml: crawlerPagesTable.capturedHtml,
+  discoveryAttempts: crawlerPagesTable.discoveryAttempts,
+  discoveryLastAttemptAt: crawlerPagesTable.discoveryLastAttemptAt,
+  discoveryNextAttemptAt: crawlerPagesTable.discoveryNextAttemptAt,
+  discoveryLastError: crawlerPagesTable.discoveryLastError,
 };
 
 const crawlerSessionFields = {
   id: crawlerSessionsTable.id,
   userId: crawlerSessionsTable.userId,
+  siteId: crawlerSessionsTable.siteId,
   name: crawlerSessionsTable.name,
   seedUrl: crawlerSessionsTable.seedUrl,
   status: crawlerSessionsTable.status,
@@ -201,8 +229,22 @@ async function discoverPageLinksWithPuppeteer(
   url: string,
   signal?: AbortSignal,
   captureHtml?: boolean,
-): Promise<{ links: Array<{ url: string; text: string }>; httpStatus: number; capturedHtml?: string }> {
-  if (signal?.aborted) return { links: [], httpStatus: 0 };
+): Promise<{
+  links: Array<{ url: string; text: string }>;
+  httpStatus: number;
+  finalUrl: string;
+  contentType?: string;
+  responseCapturedAt: Date;
+  capturedHtml?: string;
+}> {
+  if (signal?.aborted) {
+    return {
+      links: [],
+      httpStatus: 0,
+      finalUrl: url,
+      responseCapturedAt: new Date(),
+    };
+  }
 
   const page = await browser.newPage();
   try {
@@ -212,6 +254,8 @@ async function discoverPageLinksWithPuppeteer(
     await page.setDefaultNavigationTimeout(90_000);
 
     let httpStatus = 200;
+    let contentType: string | undefined;
+    let responseCapturedAt = new Date();
     let resp: Awaited<ReturnType<typeof page.goto>> = null;
     let lastNavigationError: unknown;
     for (const timeoutMs of [30_000, 60_000, 90_000]) {
@@ -226,8 +270,16 @@ async function discoverPageLinksWithPuppeteer(
     }
     if (lastNavigationError && !resp) {
       logger.warn({ url, err: String(lastNavigationError) }, "Discovery navigation retries exhausted");
+      // Do not turn a failed navigation into a synthetic HTTP 200. The caller
+      // owns crawler-side retry classification and must be able to distinguish
+      // a transient network failure from an empty successful document.
+      throw lastNavigationError;
     }
-    if (resp) httpStatus = resp.status();
+    if (resp) {
+      httpStatus = resp.status();
+      contentType = resp.headers?.()["content-type"]?.split(";")[0]?.trim().toLowerCase();
+      responseCapturedAt = new Date();
+    }
 
     // Wait for JS frameworks to finish rendering links (MutationObserver, capped at 4 s)
     await page.evaluate(() => new Promise<void>((resolve) => {
@@ -243,7 +295,7 @@ async function discoverPageLinksWithPuppeteer(
       settle(); // start the initial 300 ms quiet timer
     })).catch(() => {});
 
-    if (signal?.aborted) return { links: [], httpStatus };
+      if (signal?.aborted) return { links: [], httpStatus, finalUrl: page.url() || url, contentType, responseCapturedAt };
 
     // Cloudflare challenge detection — wait up to 55 s for it to clear
     // (matches the main scanner's challenge budget), then fall back to the
@@ -253,7 +305,15 @@ async function discoverPageLinksWithPuppeteer(
       logger.warn({ url }, "Discovery: Cloudflare challenge detected — waiting up to 55 s");
       const deadline = Date.now() + 55_000;
       while (Date.now() < deadline) {
-        if (signal?.aborted) return { links: [], httpStatus };
+        if (signal?.aborted) {
+          return {
+            links: [],
+            httpStatus,
+            finalUrl: page.url() || url,
+            contentType,
+            responseCapturedAt,
+          };
+        }
         await new Promise((r) => setTimeout(r, 2000));
         if (!(await isCloudflareChallenge(page))) break;
       }
@@ -268,7 +328,14 @@ async function discoverPageLinksWithPuppeteer(
               // The scanner-pool browser has Cloudflare clearance cookies, so rawHtml
               // is the real rendered page — pass it as capturedHtml so Phase 2 can
               // use page.setContent() instead of re-navigating and hitting Cloudflare again.
-              return { links, httpStatus: 200, ...(captureHtml ? { capturedHtml: rawHtml } : {}) };
+              return {
+                links,
+                httpStatus: 200,
+                finalUrl: page.url() || url,
+                contentType,
+                responseCapturedAt,
+                ...(captureHtml ? { capturedHtml: rawHtml } : {}),
+              };
             }
           }
         } catch (poolErr) {
@@ -278,10 +345,14 @@ async function discoverPageLinksWithPuppeteer(
         try {
           const fallback = await discoverPageLinks(url, signal);
           logger.info({ url, linkCount: fallback.links.length }, "Discovery: HTTP fetch fallback extracted links");
-          return fallback;
+          return {
+            ...fallback,
+            finalUrl: url,
+            responseCapturedAt: new Date(),
+          };
         } catch (fetchErr) {
-          logger.warn({ url, err: fetchErr }, "Discovery: HTTP fetch fallback also failed — 0 links");
-          return { links: [], httpStatus };
+          logger.warn({ url, err: fetchErr }, "Discovery: HTTP fetch fallback also failed");
+          throw fetchErr;
         }
       } else if (httpStatus === 403 || httpStatus === 503) {
         // Challenge cleared — the initial 403/503 belonged to the challenge
@@ -317,7 +388,14 @@ async function discoverPageLinksWithPuppeteer(
       }
     }
 
-    return { links, httpStatus, capturedHtml };
+    return {
+      links,
+      httpStatus,
+      finalUrl: page.url() || url,
+      contentType,
+      responseCapturedAt: capturedHtml ? new Date() : responseCapturedAt,
+      capturedHtml,
+    };
   } finally {
     await page.close().catch(() => {});
   }
@@ -384,6 +462,25 @@ export interface CrawlerConfig {
   discoveryWorkers?: number;
   /** Optional direct proxy or PAC URL applied to both crawler phases. */
   proxyPacUrl?: string;
+  /**
+   * Phase 1 backpressure limits. These apply when Crawl Boost runs discovery
+   * alongside the accessibility phase; the durable scan-ready backlog is
+   * paused at the high watermark and resumed below the low watermark.
+   */
+  discoveryQueueHighWatermark?: number;
+  discoveryQueueLowWatermark?: number;
+  /** Maximum durable Phase 1 attempts for a transient discovery failure. */
+  discoveryMaxAttempts?: number;
+  discoveryRetryBaseDelayMs?: number;
+  discoveryRetryMaxDelayMs?: number;
+  /** Durable runtime snapshot; callers should treat this as read-only. */
+  discoveryBackpressure?: {
+    throttled: boolean;
+    queueDepth: number;
+    highWatermark: number;
+    lowWatermark: number;
+    updatedAt: string;
+  };
   /** Persisted Siteimprove-style URL policy snapshot for this crawl. */
   contentRules?: Array<{
     id?: number;
@@ -402,6 +499,126 @@ export interface CrawlerConfig {
   excludedPageGroups?: string[];
   /** Marks that Page Group coverage was captured for this Phase 2 run. */
   pageGroupSelectionCapturedAt?: string;
+}
+
+export type DiscoveryFailureClass =
+  | "http_408"
+  | "http_425"
+  | "http_429"
+  | "http_5xx"
+  | "dns"
+  | "timeout"
+  | "proxy"
+  | "network"
+  | "terminal_http"
+  | "terminal";
+
+export interface DiscoveryFailure {
+  retryable: boolean;
+  class: DiscoveryFailureClass;
+}
+
+/** Keep queue controls bounded even when a caller supplies untrusted config. */
+export function getDiscoveryBackpressureLimits(config: Pick<CrawlerConfig, "maxPages" | "discoveryQueueHighWatermark" | "discoveryQueueLowWatermark">): {
+  highWatermark: number;
+  lowWatermark: number;
+} {
+  const maxPages = Math.max(1, Math.floor(config.maxPages || 1));
+  const high = Math.min(
+    maxPages,
+    Math.max(1, Math.floor(config.discoveryQueueHighWatermark ?? Math.min(100, maxPages))),
+  );
+  const low = Math.min(
+    high - 1,
+    Math.max(0, Math.floor(config.discoveryQueueLowWatermark ?? Math.floor(high / 2))),
+  );
+  return { highWatermark: high, lowWatermark: low };
+}
+
+export function getDiscoveryBackpressureDecision(
+  readyDepth: number,
+  currentlyThrottled: boolean,
+  limits: { highWatermark: number; lowWatermark: number },
+): { throttled: boolean; allowPendingClaims: true; allowLinkEnqueue: boolean } {
+  const throttled = currentlyThrottled
+    ? readyDepth > limits.lowWatermark
+    : readyDepth >= limits.highWatermark;
+  return {
+    throttled,
+    allowPendingClaims: true,
+    // Rows are claimed before a throttled worker waits. Once it resumes, the
+    // page's links are always persisted; suppressing them would silently lose
+    // crawl coverage.
+    allowLinkEnqueue: true,
+  };
+}
+
+export function classifyDiscoveryFailure(httpStatus?: number | null, error?: unknown): DiscoveryFailure {
+  if (httpStatus === 408) return { retryable: true, class: "http_408" };
+  if (httpStatus === 425) return { retryable: true, class: "http_425" };
+  if (httpStatus === 429) return { retryable: true, class: "http_429" };
+  if (httpStatus != null && httpStatus >= 500 && httpStatus <= 599) {
+    return { retryable: true, class: "http_5xx" };
+  }
+  if (httpStatus != null && httpStatus >= 400) {
+    return { retryable: false, class: "terminal_http" };
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const lower = message.toLowerCase();
+  if (
+    lower.includes("proxy") ||
+    lower.includes("err_proxy") ||
+    lower.includes("econnrefused") ||
+    lower.includes("econnreset")
+  ) {
+    return { retryable: true, class: "proxy" };
+  }
+  if (
+    lower.includes("err_name_not_resolved") ||
+    lower.includes("enotfound") ||
+    lower.includes("eai_again") ||
+    lower.includes("dns")
+  ) {
+    return { retryable: true, class: "dns" };
+  }
+  if (
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("abort") ||
+    lower.includes("etimedout")
+  ) {
+    return { retryable: true, class: "timeout" };
+  }
+  if (lower.includes("ssl") || lower.includes("certificate") || lower.includes("err_cert")) {
+    return { retryable: false, class: "terminal" };
+  }
+  if (
+    lower.includes("network") ||
+    lower.includes("socket") ||
+    lower.includes("fetch failed") ||
+    lower.includes("connection") ||
+    lower.includes("net::err_") ||
+    lower.includes("econnaborted") ||
+    lower.includes("ehostunreach") ||
+    lower.includes("enetunreach")
+  ) {
+    return { retryable: true, class: "network" };
+  }
+  return { retryable: false, class: "terminal" };
+}
+
+export function getDiscoveryRetryDelayMs(
+  attemptNumber: number,
+  config: Pick<CrawlerConfig, "discoveryRetryBaseDelayMs" | "discoveryRetryMaxDelayMs">,
+  random = Math.random,
+): number {
+  const base = Math.min(60_000, Math.max(100, Math.floor(config.discoveryRetryBaseDelayMs ?? 1_000)));
+  const max = Math.max(base, Math.min(300_000, Math.floor(config.discoveryRetryMaxDelayMs ?? 30_000)));
+  const exponential = Math.min(max, base * (2 ** Math.max(0, attemptNumber - 1)));
+  // Full jitter in [75%, 125%) avoids synchronized workers without making
+  // retries substantially longer than the configured bound.
+  return Math.min(max, Math.max(0, Math.round(exponential * (0.75 + Math.max(0, Math.min(1, random())) * 0.5))));
 }
 
 const TRACKING_PARAMS = new Set([
@@ -434,6 +651,44 @@ export function computeUrlHash(normalizedUrl: string): string {
 
 function computeContentHash(html: string): string {
   return crypto.createHash("sha256").update(html).digest("hex").slice(0, 32);
+}
+
+/** The exact gate used by runScanPhase before invoking transactional carry-forward. */
+export function shouldAttemptCrawlerCarryForward(
+  incremental: boolean,
+  contentHash: string | null | undefined,
+  previousHash: string | null | undefined,
+): boolean {
+  return incremental && Boolean(contentHash) && Boolean(previousHash) && contentHash === previousHash;
+}
+
+async function loadScopedIncrementalHashes(
+  sessionId: number,
+  previousSessionId: number | null | undefined,
+): Promise<Map<string, string>> {
+  const hashes = new Map<string, string>();
+  if (!previousSessionId) return hashes;
+  const [current] = await db
+    .select({ userId: crawlerSessionsTable.userId, siteId: crawlerSessionsTable.siteId })
+    .from(crawlerSessionsTable)
+    .where(eq(crawlerSessionsTable.id, sessionId))
+    .limit(1);
+  if (!current) return hashes;
+  const previousPages = await db
+    .select({ urlHash: crawlerPagesTable.urlHash, contentHash: crawlerPagesTable.contentHash })
+    .from(crawlerPagesTable)
+    .innerJoin(crawlerSessionsTable, eq(crawlerSessionsTable.id, crawlerPagesTable.sessionId))
+    .where(and(
+      eq(crawlerPagesTable.sessionId, previousSessionId),
+      eq(crawlerPagesTable.status, "completed"),
+      sql`${crawlerPagesTable.errorMessage} IS NULL`,
+      sql`${crawlerSessionsTable.userId} IS NOT DISTINCT FROM ${current.userId}`,
+      sql`${crawlerSessionsTable.siteId} IS NOT DISTINCT FROM ${current.siteId}`,
+    ));
+  for (const page of previousPages) {
+    if (page.contentHash) hashes.set(page.urlHash, page.contentHash);
+  }
+  return hashes;
 }
 
 // ── Page type classifier ─────────────────────────────────────────────────────
@@ -633,9 +888,43 @@ export async function clearDiscoveryCache(domain: string): Promise<void> {
 
 // ── Active crawlers registry ─────────────────────────────────────────────────
 const activeCrawlers = new Map<number, AbortController>();
+const activeCrawlerRuns = new Set<Promise<unknown>>();
+let crawlerShutdownRequested = false;
+
+/** Register every exported long-running crawler entry point exactly once. */
+function registerCrawlerWork<T>(work: () => Promise<T>): Promise<T> {
+  const tracked = Promise.resolve().then(work);
+  activeCrawlerRuns.add(tracked);
+  void tracked.finally(() => {
+    activeCrawlerRuns.delete(tracked);
+  }).catch(() => {});
+  return tracked;
+}
 
 export function isCrawlerActive(sessionId: number): boolean {
   return activeCrawlers.has(sessionId);
+}
+
+/** Abort crawler phases so shutdown does not leave Chromium work running. */
+export function stopCrawlerWork(): void {
+  crawlerShutdownRequested = true;
+  for (const controller of activeCrawlers.values()) controller.abort();
+}
+
+export function isCrawlerWorkStopping(): boolean {
+  return crawlerShutdownRequested;
+}
+
+export async function waitForCrawlerWork(timeoutMs: number): Promise<boolean> {
+  if (activeCrawlerRuns.size === 0) return true;
+  const work = Promise.all([...activeCrawlerRuns].map((run) => run.catch(() => undefined)));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+  });
+  const settled = await Promise.race([work.then(() => true), timeout]);
+  if (timer) clearTimeout(timer);
+  return settled;
 }
 
 export async function pauseCrawlerJob(sessionId: number): Promise<void> {
@@ -790,6 +1079,78 @@ function shouldEnqueue(
 
 // ── Phase 1 — Discovery helpers ──────────────────────────────────────────────
 
+async function getDiscoveryQueueState(sessionId: number): Promise<{
+  pending: number;
+  ready: number;
+  nextAttemptAt: Date | null;
+}> {
+  const [state] = await db.select({
+    pending: sql<number>`count(*) FILTER (WHERE ${crawlerPagesTable.status} = 'pending')::int`,
+    ready: sql<number>`count(*) FILTER (WHERE ${crawlerPagesTable.status} = 'discovered')::int`,
+    nextAttemptAt: sql<Date | null>`min(${crawlerPagesTable.discoveryNextAttemptAt})
+      FILTER (WHERE ${crawlerPagesTable.status} = 'pending')`,
+  })
+    .from(crawlerPagesTable)
+    .where(eq(crawlerPagesTable.sessionId, sessionId));
+  return {
+    pending: Number(state?.pending ?? 0),
+    ready: Number(state?.ready ?? 0),
+    nextAttemptAt: state?.nextAttemptAt ? new Date(state.nextAttemptAt) : null,
+  };
+}
+
+async function setDiscoveryBackpressureState(
+  sessionId: number,
+  config: CrawlerConfig,
+  throttled: boolean,
+  queueDepth: number,
+): Promise<void> {
+  const limits = getDiscoveryBackpressureLimits(config);
+  const current = config.discoveryBackpressure;
+  // Queue depth itself is reported live by the progress endpoint. Persist only
+  // state transitions (plus the initial snapshot) so a large crawl does not
+  // turn every claimed URL into a JSONB write.
+  if (
+    current &&
+    current.throttled === throttled &&
+    current.highWatermark === limits.highWatermark &&
+    current.lowWatermark === limits.lowWatermark
+  ) return;
+
+  const nextConfig = {
+    ...config,
+    discoveryBackpressure: {
+      throttled,
+      queueDepth,
+      highWatermark: limits.highWatermark,
+      lowWatermark: limits.lowWatermark,
+      updatedAt: new Date().toISOString(),
+    },
+  };
+  // All discovery workers share this object within a process. Persisting the
+  // snapshot also makes throttling visible to progress clients and recoverable
+  // after a process restart.
+  config.discoveryBackpressure = nextConfig.discoveryBackpressure;
+  await db.update(crawlerSessionsTable)
+    .set({ config: nextConfig })
+    .where(eq(crawlerSessionsTable.id, sessionId));
+}
+
+function discoveryRetryAttempts(config: CrawlerConfig): number {
+  return Math.min(8, Math.max(1, Math.floor(config.discoveryMaxAttempts ?? 4)));
+}
+
+async function waitForDiscoveryDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, delayMs);
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
+}
+
 /**
  * Atomically claim one pending discovery page using SELECT … FOR UPDATE SKIP
  * LOCKED inside a transaction. Multiple workers calling this concurrently each
@@ -800,14 +1161,23 @@ async function claimNextPendingPage(sessionId: number) {
   return db.transaction(async (tx) => {
     const [row] = await tx.select(crawlerPageFields)
       .from(crawlerPagesTable)
-      .where(and(eq(crawlerPagesTable.sessionId, sessionId), eq(crawlerPagesTable.status, "pending")))
+      .where(and(
+        eq(crawlerPagesTable.sessionId, sessionId),
+        eq(crawlerPagesTable.status, "pending"),
+        sql`(${crawlerPagesTable.discoveryNextAttemptAt} IS NULL OR ${crawlerPagesTable.discoveryNextAttemptAt} <= NOW())`,
+      ))
       .orderBy(crawlerPagesTable.id)
       .limit(1)
       .for("update", { skipLocked: true });
     if (!row) return null;
     // Mark as claimed so other workers skip it immediately.
     await tx.update(crawlerPagesTable)
-      .set({ status: "navigating" })
+      .set({
+        status: "navigating",
+        discoveryAttempts: sql`${crawlerPagesTable.discoveryAttempts} + 1`,
+        discoveryLastAttemptAt: new Date(),
+        discoveryNextAttemptAt: null,
+      })
       .where(eq(crawlerPagesTable.id, row.id));
     return row;
   });
@@ -823,6 +1193,7 @@ async function runDiscoveryWorker(
   robotsRules: RobotsRules | null,
   seenHashes: Set<string>,
   controller: AbortController,
+  enableBackpressure = false,
 ): Promise<void> {
   let discoveryBrowser: Browser | null = null;
   try {
@@ -843,8 +1214,16 @@ async function runDiscoveryWorker(
       // Atomically claim the next pending URL — no two workers visit the same page.
       const pendingPage = await claimNextPendingPage(sessionId);
       if (!pendingPage) {
-        logger.info({ sessionId, workerId }, "Discovery worker queue drained");
-        break;
+        const queue = await getDiscoveryQueueState(sessionId);
+        if (queue.pending === 0) {
+          logger.info({ sessionId, workerId }, "Discovery worker queue drained");
+          break;
+        }
+        const waitMs = queue.nextAttemptAt
+          ? Math.max(50, Math.min(1_000, new Date(queue.nextAttemptAt).getTime() - Date.now()))
+          : 250;
+        await waitForDiscoveryDelay(waitMs, controller.signal);
+        continue;
       }
 
       // Depth check — skip over-depth pages and continue to the next URL so
@@ -863,9 +1242,36 @@ async function runDiscoveryWorker(
       }
 
       const pageType = classifyPageType(pendingPage.url);
+      // Backpressure limits the amount of scan-ready work Phase 1 hands to
+      // Phase 2. It deliberately does not gate claims on pending depth: each
+      // claimed row waits here for the scan-ready backlog to drain, avoiding
+      // both self-deadlock and loss of links discovered on that page.
+      if (enableBackpressure) {
+        const limits = getDiscoveryBackpressureLimits(config);
+        while (!controller.signal.aborted) {
+          const queue = await getDiscoveryQueueState(sessionId);
+          const wasThrottled = config.discoveryBackpressure?.throttled === true;
+          const decision = getDiscoveryBackpressureDecision(queue.ready, wasThrottled, limits);
+          if (!decision.throttled) {
+            if (wasThrottled) {
+              await setDiscoveryBackpressureState(sessionId, config, false, queue.ready);
+            }
+            break;
+          }
+          await setDiscoveryBackpressureState(sessionId, config, true, queue.ready);
+          await waitForDiscoveryDelay(500, controller.signal);
+        }
+      }
 
       try {
-        const { links, httpStatus, capturedHtml } = await discoverPageLinksWithPuppeteer(
+        const {
+          links,
+          httpStatus,
+          finalUrl,
+          contentType,
+          responseCapturedAt,
+          capturedHtml,
+        } = await discoverPageLinksWithPuppeteer(
           discoveryBrowser,
           pendingPage.url,
           controller.signal,
@@ -873,23 +1279,49 @@ async function runDiscoveryWorker(
         );
         if (controller.signal.aborted) break;
 
-        // A final 4xx/5xx response is a broken destination. Successful
-        // redirects are followed by the browser/fetch and are not broken.
-        if (httpStatus >= 400 && httpStatus !== 403) {
+        const responseFailure = classifyDiscoveryFailure(httpStatus);
+        // 4xx (except retryable timeout/overload statuses) and exhausted 5xx
+        // responses are terminal destinations. Successful redirects are
+        // followed by the browser and are not broken.
+        if (httpStatus >= 400) {
+          const attemptNumber = (pendingPage.discoveryAttempts ?? 0) + 1;
+          if (responseFailure.retryable && attemptNumber < discoveryRetryAttempts(config)) {
+            const delayMs = getDiscoveryRetryDelayMs(attemptNumber, config);
+            const retryAt = new Date(Date.now() + delayMs);
+            await db.update(crawlerPagesTable).set({
+              status: "pending",
+              httpStatus,
+            finalUrl,
+            contentType,
+            responseCapturedAt,
+              discoveryLastError: `HTTP ${httpStatus} (${responseFailure.class})`,
+              discoveryNextAttemptAt: retryAt,
+            }).where(eq(crawlerPagesTable.id, pendingPage.id));
+            logger.warn(
+              { sessionId, workerId, url: pendingPage.url, httpStatus, attemptNumber, retryAt, delayMs },
+              "Discovery: transient HTTP failure — retry scheduled",
+            );
+            continue;
+          }
           logger.info({ sessionId, workerId, url: pendingPage.url, httpStatus }, "Discovery: broken page detected");
           await db.insert(brokenLinksTable).values({
             sessionId,
             sourceUrl: pendingPage.discoveredFrom ?? pendingPage.url,
             brokenUrl: pendingPage.url,
             httpStatus,
-            errorType: "http_error",
+            errorType: responseFailure.retryable ? `http_${responseFailure.class}_exhausted` : "http_error",
             anchorText: null,
           });
           await db.update(crawlerPagesTable).set({
             status: "broken",
             pageType,
             httpStatus,
+            finalUrl,
+            contentType,
+            responseCapturedAt,
             errorMessage: `HTTP ${httpStatus}`,
+            discoveryLastError: `HTTP ${httpStatus} (${responseFailure.class})`,
+            discoveryNextAttemptAt: null,
             scannedAt: new Date(),
           }).where(eq(crawlerPagesTable.id, pendingPage.id));
           await updateCrawlerStats(sessionId);
@@ -930,23 +1362,54 @@ async function runDiscoveryWorker(
           status: "discovered",
           pageType,
           httpStatus,
+          finalUrl,
+          contentType,
+          responseCapturedAt,
           scannedAt: new Date(),
           ...(capturedHtml ? { capturedHtml } : {}),
         }).where(eq(crawlerPagesTable.id, pendingPage.id));
 
+        if (enableBackpressure) {
+          const queue = await getDiscoveryQueueState(sessionId);
+          const limits = getDiscoveryBackpressureLimits(config);
+          const wasThrottled = config.discoveryBackpressure?.throttled === true;
+          const decision = getDiscoveryBackpressureDecision(queue.ready, wasThrottled, limits);
+          if (decision.throttled) {
+            await setDiscoveryBackpressureState(sessionId, config, true, queue.ready);
+          } else if (wasThrottled) {
+            await setDiscoveryBackpressureState(sessionId, config, false, queue.ready);
+          }
+        }
+
       } catch (err) {
         if (controller.signal.aborted) break;
         const msg = err instanceof Error ? err.message : String(err);
+        const failure = classifyDiscoveryFailure(undefined, err);
+        const attemptNumber = (pendingPage.discoveryAttempts ?? 0) + 1;
+        if (failure.retryable && attemptNumber < discoveryRetryAttempts(config)) {
+          const delayMs = getDiscoveryRetryDelayMs(attemptNumber, config);
+          const retryAt = new Date(Date.now() + delayMs);
+          await db.update(crawlerPagesTable).set({
+            status: "pending",
+            discoveryLastError: `${failure.class}: ${msg.slice(0, 200)}`,
+            discoveryNextAttemptAt: retryAt,
+          }).where(eq(crawlerPagesTable.id, pendingPage.id));
+          logger.warn(
+            { sessionId, workerId, url: pendingPage.url, errorClass: failure.class, attemptNumber, retryAt, delayMs },
+            "Discovery: transient navigation failure — retry scheduled",
+          );
+          continue;
+        }
 
-        const isDnsFailure = msg.includes("ERR_NAME_NOT_RESOLVED") || msg.includes("ENOTFOUND") || msg.includes("EAI_AGAIN");
-
-        const errorType = isDnsFailure
+        const errorType = failure.class === "dns"
           ? "dns_error"
-          : msg.toLowerCase().includes("timeout") || msg.toLowerCase().includes("abort")
+          : failure.class === "timeout"
             ? "timeout"
-            : msg.toLowerCase().includes("ssl") || msg.toLowerCase().includes("certificate")
-              ? "ssl_error"
-              : "network_error";
+            : failure.class === "proxy"
+              ? "proxy_error"
+              : msg.toLowerCase().includes("ssl") || msg.toLowerCase().includes("certificate")
+                ? "ssl_error"
+                : "network_error";
         logger.info({ sessionId, workerId, url: pendingPage.url, err: msg }, "Discovery: link destination failed");
         await db.insert(brokenLinksTable).values({
           sessionId,
@@ -960,6 +1423,8 @@ async function runDiscoveryWorker(
           status: "broken",
           pageType,
           errorMessage: `Discovery error: ${msg.slice(0, 200)}`,
+          discoveryLastError: `${failure.class}: ${msg.slice(0, 200)}`,
+          discoveryNextAttemptAt: null,
           scannedAt: new Date(),
         }).where(eq(crawlerPagesTable.id, pendingPage.id));
         await updateCrawlerStats(sessionId);
@@ -986,6 +1451,7 @@ async function runDiscoveryPhase(
   /** When provided (Crawl Boost parallel mode), reuse this controller instead of
    *  creating a new one, and skip managing activeCrawlers here. */
   externalController?: AbortController,
+   enableBackpressure = false,
 ): Promise<void> {
   const controller = externalController ?? new AbortController();
   if (!externalController) activeCrawlers.set(sessionId, controller);
@@ -999,7 +1465,7 @@ async function runDiscoveryPhase(
   try {
     await Promise.all(
       Array.from({ length: workerCount }, (_, i) =>
-        runDiscoveryWorker(i + 1, sessionId, config, seedDomain, seedPath, robotsRules, seenHashes, controller),
+        runDiscoveryWorker(i + 1, sessionId, config, seedDomain, seedPath, robotsRules, seenHashes, controller, enableBackpressure),
       ),
     );
   } finally {
@@ -1089,6 +1555,19 @@ async function runScanPhase(
                 sql`${crawlerPagesTable.status} IN ('pending', 'navigating')`,
               ),
             );
+          if (config.discoveryBackpressure?.throttled === true) {
+            const [{ readyCnt }] = await db
+              .select({ readyCnt: sql<number>`count(*)::int` })
+              .from(crawlerPagesTable)
+              .where(and(
+                eq(crawlerPagesTable.sessionId, sessionId),
+                eq(crawlerPagesTable.status, "discovered"),
+              ));
+            const limits = getDiscoveryBackpressureLimits(config);
+            if (readyCnt <= limits.lowWatermark) {
+              await setDiscoveryBackpressureState(sessionId, config, false, readyCnt);
+            }
+          }
           if (pendingCnt > 0) {
             // Phase 1 still working — wait briefly and check for new discovered pages
             await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -1150,20 +1629,73 @@ async function runScanPhase(
           signal: controller.signal,
           onStage: undefined,
           // Crawl Boost: reuse HTML captured in Phase 1 to skip re-navigation
-          ...(config.crawlBoost && page.capturedHtml ? { preloadHtml: page.capturedHtml } : {}),
+          ...(config.crawlBoost && page.capturedHtml
+            ? {
+                preloadHtml: page.capturedHtml,
+                preloadMetadata: {
+                  finalUrl: page.finalUrl ?? page.url,
+                  httpStatus: page.httpStatus ?? 0,
+                  contentType: page.contentType,
+                  responseCapturedAt: page.responseCapturedAt ?? new Date(),
+                },
+              }
+            : {}),
         });
 
         if (controller.signal.aborted) break;
 
         const contentHash = scanResult.pageHtml ? computeContentHash(scanResult.pageHtml) : "";
 
-        // Incremental: skip if content unchanged
-        if (config.incremental && contentHash && prevHashes.get(page.urlHash) === contentHash) {
-          await db.update(crawlerPagesTable)
-            .set({ status: "skipped", scannedAt: new Date(), contentHash, errorMessage: "Unchanged since last scan" })
-            .where(eq(crawlerPagesTable.id, page.id));
-          await updateCrawlerStats(sessionId);
-          continue;
+        // Incremental carry-forward is scoped and transactional. The helper
+        // only returns true after the page result and all evidence commit;
+        // missing/failed evidence falls through to persist this fresh result.
+        if (shouldAttemptCrawlerCarryForward(config.incremental, contentHash, prevHashes.get(page.urlHash))) {
+          const [candidate] = await db.insert(pageResultsTable).values({
+            scanId: scanSessionId,
+            url: redactProvenanceUrl(page.url),
+            status: "pending",
+            contentHash,
+          }).returning({ id: pageResultsTable.id });
+          let carried = false;
+          try {
+            carried = candidate
+              ? await tryCarryForward(
+                scanSessionId,
+                candidate.id,
+                page.url,
+                contentHash,
+                {
+                  rules: config.rules,
+                  proxyPacUrl: config.proxyPacUrl,
+                  crawlerSessionId: sessionId,
+                  source: "crawler",
+                },
+                undefined,
+                {
+                  finalUrl: scanResult.httpProvenance?.finalUrl ?? null,
+                  httpStatus: scanResult.httpProvenance?.httpStatus ?? scanResult.httpStatus ?? null,
+                  contentType: scanResult.httpProvenance?.contentType ?? null,
+                  responseCapturedAt: scanResult.httpProvenance?.responseCapturedAt ?? new Date(),
+                  acquisitionMethod: scanResult.httpProvenance?.acquisitionMethod ?? "chromium",
+                  proxyStrategy: scanResult.httpProvenance?.proxyStrategy ??
+                    (config.proxyPacUrl ? "configured_pac" : "direct"),
+                  renderedDomHash: scanResult.httpProvenance?.renderedDomHash ?? null,
+                },
+              )
+              : false;
+          } catch (carryErr) {
+            logger.warn({ sessionId, url: page.url, err: carryErr }, "Crawler incremental carry-forward failed — persisting fresh result");
+          }
+          if (carried) {
+            await db.update(crawlerPagesTable)
+              .set({ status: "skipped", scannedAt: new Date(), contentHash, errorMessage: "Unchanged since last scan" })
+              .where(eq(crawlerPagesTable.id, page.id));
+            await updateCrawlerStats(sessionId);
+            continue;
+          }
+          if (candidate) {
+            await db.delete(pageResultsTable).where(eq(pageResultsTable.id, candidate.id));
+          }
         }
 
         // Extract links from Puppeteer-rendered HTML — used for two purposes:
@@ -1221,15 +1753,25 @@ async function runScanPhase(
 
         const [pr] = await db.insert(pageResultsTable).values({
           scanId: scanSessionId,
-          url: page.url,
+          url: redactProvenanceUrl(page.url),
           status: scanResult.error ? "failed" : "completed",
           issueCount,
           criticalCount: scanResult.issues?.filter((i) => i.impact === "critical").length ?? 0,
           errorMessage: scanResult.error ?? null,
+          contentHash: contentHash || null,
           scannedAt: new Date(),
           loadDurationMs: scanResult.loadDurationMs ?? null,
           screenshot: scanResult.screenshot ?? null,
           pageHtml: scanResult.pageHtml ?? null,
+          finalUrl: scanResult.httpProvenance?.finalUrl ?? null,
+          httpStatus: scanResult.httpProvenance?.httpStatus ?? scanResult.httpStatus ?? null,
+          contentType: scanResult.httpProvenance?.contentType ?? null,
+          responseCapturedAt: scanResult.httpProvenance?.responseCapturedAt ?? new Date(),
+          acquisitionMethod: scanResult.httpProvenance?.acquisitionMethod ?? "chromium",
+          proxyStrategy: scanResult.httpProvenance?.proxyStrategy ??
+            (config.proxyPacUrl ? "configured_pac" : "direct"),
+          rawHtmlHash: scanResult.error ? null : scanResult.httpProvenance?.rawHtmlHash ?? null,
+          renderedDomHash: scanResult.error ? null : scanResult.httpProvenance?.renderedDomHash ?? null,
         }).returning({ id: pageResultsTable.id });
         pageResultId = pr?.id;
 
@@ -1253,6 +1795,43 @@ async function runScanPhase(
           } finally { client.release(); }
         }
 
+        if (pageResultId) {
+          try {
+            const selected = getSelectedRuleIds(config.rules);
+            const statuses = scanResult.ruleStatuses?.length
+              ? scanResult.ruleStatuses
+              : getRuleExecutionStatuses(selected, new Set());
+            await persistCrawlerRuleStatuses(
+              pageResultId,
+              scanResult.error
+                ? statuses.map((status) => status.status === "not-selected"
+                  ? status
+                  : { ...status, status: "failed" as const })
+                : statuses,
+            );
+          } catch (statusErr) {
+            logger.warn({ sessionId, url: page.url, err: statusErr }, "Crawler: failed to persist rule execution statuses");
+          }
+          if (scanResult.ruleStats?.length) {
+            try {
+              const statsValues = scanResult.ruleStats
+                .filter((stat) => stat.totalChecked > 0)
+                .map((stat) => `(${pageResultId}, '${stat.ruleId.replace(/'/g, "''")}', ${stat.totalChecked}, '${stat.scope}')`)
+                .join(",");
+              if (statsValues) {
+                await pool.query(
+                  `INSERT INTO rule_page_stats (page_result_id, rule_id, total_checked, scope)
+                   VALUES ${statsValues}
+                   ON CONFLICT (page_result_id, rule_id) DO UPDATE
+                     SET total_checked = EXCLUDED.total_checked, scope = EXCLUDED.scope`,
+                );
+              }
+            } catch (statsErr) {
+              logger.warn({ sessionId, url: page.url, err: statsErr }, "Crawler: failed to persist rule check stats");
+            }
+          }
+        }
+
         await db.update(crawlerPagesTable).set({
           status: scanResult.error ? "failed" : "completed",
           contentHash: contentHash || null,
@@ -1265,10 +1844,11 @@ async function runScanPhase(
 
         // Save QA data for this page (crawler pipeline only)
         if (!scanResult.error) {
+          const persistedPageUrl = redactProvenanceUrl(page.url);
           try {
             await db.insert(qaPagesTable).values({
               scanId: scanSessionId,
-              url: page.url,
+              url: persistedPageUrl,
               title: scanResult.pageMeta?.title ?? null,
               h1: scanResult.pageMeta?.h1 ?? null,
               metaDescription: scanResult.pageMeta?.metaDescription ?? null,
@@ -1288,8 +1868,8 @@ async function runScanPhase(
               await db.insert(qaLinksTable).values(
                 scanResult.links.map((link) => ({
                   scanId: scanSessionId,
-                  sourceUrl: page.url,
-                  destUrl: link.href,
+                  sourceUrl: persistedPageUrl,
+                  destUrl: redactProvenanceUrl(link.href),
                   anchorText: link.anchorText || null,
                   linkType: link.linkType,
                   isUnsafe: sourceIsHttps && link.href.startsWith("http://"),
@@ -1305,8 +1885,8 @@ async function runScanPhase(
               await db.insert(qaImagesTable).values(
                 scanResult.images.map((img) => ({
                   scanId: scanSessionId,
-                  sourceUrl: page.url,
-                  src: img.src,
+                  sourceUrl: persistedPageUrl,
+                  src: redactProvenanceUrl(img.src),
                   alt: img.alt || null,
                   width: img.width ?? null,
                   height: img.height ?? null,
@@ -1388,7 +1968,8 @@ async function runScanPhase(
 }
 
 // ── Public: start crawler ─────────────────────────────────────────────────────
-export async function startCrawlerJob(sessionId: number): Promise<void> {
+async function runCrawlerJob(sessionId: number): Promise<void> {
+  if (crawlerShutdownRequested) return;
   const [session] = await db.select(crawlerSessionFields)
     .from(crawlerSessionsTable)
     .where(eq(crawlerSessionsTable.id, sessionId))
@@ -1416,6 +1997,7 @@ export async function startCrawlerJob(sessionId: number): Promise<void> {
     if (!scanSessionId && !config.crawlOnly) {
       const [scanSession] = await db.insert(scanSessionsTable).values({
         userId: session.userId,
+        siteId: session.siteId,
         name: `[Crawler] ${session.name}`,
         initiatorName: config.initiatorName ?? null,
         initiatorRole: config.initiatorRole ?? null,
@@ -1444,17 +2026,7 @@ export async function startCrawlerJob(sessionId: number): Promise<void> {
     const robotsRules = config.respectRobotsTxt ? await fetchRobotsRules(session.seedUrl) : null;
 
     // Load previous hashes for incremental
-    const prevHashes = new Map<string, string>();
-    if (config.incremental && config.prevSessionId) {
-      const prevPages = await db.select({ urlHash: crawlerPagesTable.urlHash, contentHash: crawlerPagesTable.contentHash })
-        .from(crawlerPagesTable)
-        .where(and(
-          eq(crawlerPagesTable.sessionId, config.prevSessionId),
-          eq(crawlerPagesTable.status, "completed"),
-          sql`${crawlerPagesTable.errorMessage} IS NULL`,
-        ));
-      for (const p of prevPages) { if (p.contentHash) prevHashes.set(p.urlHash, p.contentHash); }
-    }
+    const prevHashes = await loadScopedIncrementalHashes(sessionId, config.incremental ? config.prevSessionId : null);
 
     // Build initial URL queue
     const seenHashes = new Set<string>();
@@ -1539,7 +2111,10 @@ export async function startCrawlerJob(sessionId: number): Promise<void> {
       try {
         await Promise.all([
           // Phase 1: discover URLs and capture pre-rendered HTML
-          runDiscoveryPhase(sessionId, config, seedDomain, seedPath, robotsRules, seenHashes, sharedController),
+          runDiscoveryPhase(
+            sessionId, config, seedDomain, seedPath, robotsRules, seenHashes, sharedController,
+            /* enableBackpressure */ true,
+          ),
           // Phase 2: scan discovered pages as they arrive (waitForDiscovery keeps
           // the loop alive while Phase 1 is still adding pages)
           runScanPhase(
@@ -1598,7 +2173,7 @@ export async function startCrawlerJob(sessionId: number): Promise<void> {
 
     if (config.autoScan && !config.crawlOnly) {
       logger.info({ sessionId }, "Phase 1 complete — auto-starting Phase 2 scan");
-      await startScanPhase(sessionId);
+      await runStartScanPhase(sessionId);
     } else {
       logger.info({ sessionId }, "Phase 1 complete — awaiting scan trigger");
     }
@@ -1612,12 +2187,19 @@ export async function startCrawlerJob(sessionId: number): Promise<void> {
   }
 }
 
+/** Start a crawler while retaining a settlement handle for graceful shutdown. */
+export function startCrawlerJob(sessionId: number): Promise<void> {
+  if (crawlerShutdownRequested) return Promise.resolve();
+  return registerCrawlerWork(() => runCrawlerJob(sessionId));
+}
+
 /**
  * Starts due site schedules. The site row is claimed before the crawler
  * session is inserted so the minute-level scheduler cannot enqueue the same
  * site twice while a previous run is still active.
  */
 export async function runScheduledCrawls(): Promise<number> {
+  if (crawlerShutdownRequested) return 0;
   const dueSites = await db.select({
     id: sitesTable.id,
     userId: sitesTable.userId,
@@ -1642,6 +2224,7 @@ export async function runScheduledCrawls(): Promise<number> {
 
   let started = 0;
   for (const site of dueSites) {
+    if (crawlerShutdownRequested) break;
     const claimed = await db.update(sitesTable)
       .set({
         lifecycleStatus: "crawling",
@@ -1655,6 +2238,12 @@ export async function runScheduledCrawls(): Promise<number> {
       ))
       .returning({ id: sitesTable.id });
     if (claimed.length === 0) continue;
+    if (crawlerShutdownRequested) {
+      await db.update(sitesTable)
+        .set({ lifecycleStatus: "idle", updatedAt: new Date() })
+        .where(eq(sitesTable.id, site.id));
+      break;
+    }
 
     const rules = await db.select({
       id: siteContentRulesTable.id,
@@ -1719,6 +2308,7 @@ export async function runScheduledCrawls(): Promise<number> {
  * starting the same session.
  */
 export async function runDueCrawlerSessions(): Promise<number> {
+  if (crawlerShutdownRequested) return 0;
   const due = await db.update(crawlerSessionsTable)
     .set({ status: "starting", scheduledStartAt: null })
     .where(and(
@@ -1729,6 +2319,15 @@ export async function runDueCrawlerSessions(): Promise<number> {
     .returning({ id: crawlerSessionsTable.id });
 
   for (const session of due) {
+    if (crawlerShutdownRequested) {
+      await db.update(crawlerSessionsTable)
+        .set({ status: "pending" })
+        .where(and(
+          eq(crawlerSessionsTable.id, session.id),
+          eq(crawlerSessionsTable.status, "starting"),
+        ));
+      continue;
+    }
     void startCrawlerJob(session.id).catch((err) =>
       logger.error({ sessionId: session.id, err }, "Scheduled crawler session failed to start"),
     );
@@ -1737,7 +2336,8 @@ export async function runDueCrawlerSessions(): Promise<number> {
 }
 
 // ── Public: resume crawler ────────────────────────────────────────────────────
-export async function resumeCrawlerJob(sessionId: number): Promise<void> {
+async function runResumeCrawlerJob(sessionId: number): Promise<void> {
+  if (crawlerShutdownRequested) return;
   const [session] = await db.select(crawlerSessionFields)
     .from(crawlerSessionsTable)
     .where(eq(crawlerSessionsTable.id, sessionId))
@@ -1772,17 +2372,7 @@ export async function resumeCrawlerJob(sessionId: number): Promise<void> {
     .from(crawlerPagesTable)
     .where(and(eq(crawlerPagesTable.sessionId, sessionId), eq(crawlerPagesTable.status, "discovered")));
 
-  const prevHashes = new Map<string, string>();
-  if (config.incremental && config.prevSessionId) {
-    const prevPages = await db.select({ urlHash: crawlerPagesTable.urlHash, contentHash: crawlerPagesTable.contentHash })
-      .from(crawlerPagesTable)
-      .where(and(
-        eq(crawlerPagesTable.sessionId, config.prevSessionId),
-        eq(crawlerPagesTable.status, "completed"),
-        sql`${crawlerPagesTable.errorMessage} IS NULL`,
-      ));
-    for (const p of prevPages) { if (p.contentHash) prevHashes.set(p.urlHash, p.contentHash); }
-  }
+  const prevHashes = await loadScopedIncrementalHashes(sessionId, config.incremental ? config.prevSessionId : null);
 
   try {
     if (pendingCnt > 0) {
@@ -1804,7 +2394,7 @@ export async function resumeCrawlerJob(sessionId: number): Promise<void> {
 
       if (config.autoScan && !config.crawlOnly) {
         logger.info({ sessionId }, "Phase 1 (resumed) complete — auto-starting Phase 2 scan");
-        await startScanPhase(sessionId);
+        await runStartScanPhase(sessionId);
       } else {
         logger.info({ sessionId }, "Phase 1 (resumed) complete — awaiting scan trigger");
       }
@@ -1828,7 +2418,7 @@ export async function resumeCrawlerJob(sessionId: number): Promise<void> {
       await db.update(crawlerSessionsTable)
         .set({ status: "crawled", pausedAt: null, errorMessage: null, completedAt: null })
         .where(eq(crawlerSessionsTable.id, sessionId));
-      await startScanPhase(sessionId);
+      await runStartScanPhase(sessionId);
       return;
     }
 
@@ -1837,7 +2427,7 @@ export async function resumeCrawlerJob(sessionId: number): Promise<void> {
     await db.update(crawlerSessionsTable)
       .set({ status: "pending", pausedAt: null, errorMessage: null, completedAt: null })
       .where(eq(crawlerSessionsTable.id, sessionId));
-    await startCrawlerJob(sessionId);
+    await runCrawlerJob(sessionId);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error({ sessionId, err }, "Crawler resume failed");
@@ -1846,6 +2436,11 @@ export async function resumeCrawlerJob(sessionId: number): Promise<void> {
       .where(eq(crawlerSessionsTable.id, sessionId));
     throw err;
   }
+}
+
+export function resumeCrawlerJob(sessionId: number): Promise<void> {
+  if (crawlerShutdownRequested) return Promise.resolve();
+  return registerCrawlerWork(() => runResumeCrawlerJob(sessionId));
 }
 
 // ── Public: start Phase 2 (accessibility scan) manually ───────────────────────
@@ -1896,7 +2491,8 @@ async function skipExcludedPageGroups(sessionId: number, config: CrawlerConfig):
   }
 }
 
-export async function startScanPhase(sessionId: number): Promise<void> {
+async function runStartScanPhase(sessionId: number): Promise<void> {
+  if (crawlerShutdownRequested) return;
   const [session] = await db.select(crawlerSessionFields).from(crawlerSessionsTable)
     .where(eq(crawlerSessionsTable.id, sessionId)).limit(1);
 
@@ -1946,17 +2542,7 @@ export async function startScanPhase(sessionId: number): Promise<void> {
     }).where(eq(scanSessionsTable.id, scanSessionId));
   }
 
-  const prevHashes = new Map<string, string>();
-  if (config.incremental && config.prevSessionId) {
-    const prevPages = await db.select({ urlHash: crawlerPagesTable.urlHash, contentHash: crawlerPagesTable.contentHash })
-      .from(crawlerPagesTable)
-      .where(and(
-        eq(crawlerPagesTable.sessionId, config.prevSessionId),
-        eq(crawlerPagesTable.status, "completed"),
-        sql`${crawlerPagesTable.errorMessage} IS NULL`,
-      ));
-    for (const p of prevPages) { if (p.contentHash) prevHashes.set(p.urlHash, p.contentHash); }
-  }
+  const prevHashes = await loadScopedIncrementalHashes(sessionId, config.incremental ? config.prevSessionId : null);
 
   const seedDomain = (() => { try { return new URL(session.seedUrl).hostname; } catch { return ""; } })();
   const seedPath = (() => {
@@ -1988,6 +2574,11 @@ export async function startScanPhase(sessionId: number): Promise<void> {
   }
 }
 
+export function startScanPhase(sessionId: number): Promise<void> {
+  if (crawlerShutdownRequested) return Promise.resolve();
+  return registerCrawlerWork(() => runStartScanPhase(sessionId));
+}
+
 // ── Stats updater ─────────────────────────────────────────────────────────────
 async function updateCrawlerStats(sessionId: number): Promise<void> {
   const client = await pool.connect();
@@ -2017,7 +2608,8 @@ async function updateCrawlerStats(sessionId: number): Promise<void> {
  * completed/failed. For a still-running session the scan loop picks them up
  * automatically — no restart is needed.
  */
-export async function retryFailedPages(sessionId: number): Promise<{ ok: boolean; reset: number }> {
+async function runRetryFailedPages(sessionId: number): Promise<{ ok: boolean; reset: number }> {
+  if (crawlerShutdownRequested) return { ok: false, reset: 0 };
   const [session] = await db.select(crawlerSessionFields)
     .from(crawlerSessionsTable)
     .where(eq(crawlerSessionsTable.id, sessionId))
@@ -2051,6 +2643,11 @@ export async function retryFailedPages(sessionId: number): Promise<{ ok: boolean
 
   logger.info({ sessionId, reset: failedRows.length }, "retryFailedPages: reset failed pages to discovered");
   return { ok: true, reset: failedRows.length };
+}
+
+export function retryFailedPages(sessionId: number): Promise<{ ok: boolean; reset: number }> {
+  if (crawlerShutdownRequested) return Promise.resolve({ ok: false, reset: 0 });
+  return registerCrawlerWork(() => runRetryFailedPages(sessionId));
 }
 
 // ── Broken link detection ─────────────────────────────────────────────────────
@@ -2148,6 +2745,7 @@ async function checkBrokenLinks(
  */
 export async function resumeOrphanedCrawlerSessions(): Promise<void> {
   try {
+    if (isCrawlerWorkStopping()) return;
     const orphaned = await db.select({
       id: crawlerSessionsTable.id,
       status: crawlerSessionsTable.status,
@@ -2164,6 +2762,10 @@ export async function resumeOrphanedCrawlerSessions(): Promise<void> {
     logger.info({ count: orphaned.length }, "Startup recovery: found orphaned crawler sessions — resuming");
 
     for (const session of orphaned) {
+      if (isCrawlerWorkStopping()) {
+        logger.info("Stopping orphaned crawler recovery before the next session");
+        return;
+      }
       try {
         if (session.status === "discovering") {
           // Phase 1 was in progress: reset any pages that were mid-discovery
@@ -2184,7 +2786,11 @@ export async function resumeOrphanedCrawlerSessions(): Promise<void> {
           logger.info({ sessionId: session.id, pagesReset: (result as unknown as { rowCount?: number }).rowCount ?? 0 },
             "Startup recovery: resuming Phase 1 (discovery)");
 
-          void resumeCrawlerJob(session.id)
+          // Await each recovery before scheduling the next session.  Startup
+          // recovery runs after health is available, so this deliberately
+          // trades throughput for bounded browser/database pressure.
+          if (isCrawlerWorkStopping()) return;
+          await resumeCrawlerJob(session.id)
             .catch((err) => logger.error({ sessionId: session.id, err }, "Startup recovery Phase 1 failed"));
 
         } else if (session.status === "scanning") {
@@ -2225,14 +2831,16 @@ export async function resumeOrphanedCrawlerSessions(): Promise<void> {
 
           // Call startScanPhase directly — NOT resumeCrawlerJob, which would
           // re-run Phase 1 if any "pending" pages exist.
-          void startScanPhase(session.id)
+          if (isCrawlerWorkStopping()) return;
+          await startScanPhase(session.id)
             .catch((err) => logger.error({ sessionId: session.id, err }, "Startup recovery Phase 2 failed"));
 
         } else if (session.status === "crawled" && !(session.config as CrawlerConfig).crawlOnly) {
           // Phase 1 complete, Phase 2 never started — kick it off directly.
           logger.info({ sessionId: session.id }, "Startup recovery: starting Phase 2 from 'crawled' state");
 
-          void startScanPhase(session.id)
+          if (isCrawlerWorkStopping()) return;
+          await startScanPhase(session.id)
             .catch((err) => logger.error({ sessionId: session.id, err }, "Startup recovery Phase 2 (crawled) failed"));
         }
 

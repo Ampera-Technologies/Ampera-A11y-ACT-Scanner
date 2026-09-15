@@ -26,8 +26,10 @@ export function runStructureMiscRules(results: ScanRawResult[], EMIT_MANUAL_ONLY
   });
 
   // ACT-R84(link): Link opens in new window without warning
+  let visibleBlankTargetLinks = 0;
   document.querySelectorAll("a[target='_blank']").forEach((el) => {
     if (!isVisible(el)) return;
+    visibleBlankTargetLinks++;
     const text = (el.textContent || "").toLowerCase();
     const ariaLabel = (el.getAttribute("aria-label") || "").toLowerCase();
     const title = (el.getAttribute("title") || "").toLowerCase();
@@ -37,6 +39,9 @@ export function runStructureMiscRules(results: ScanRawResult[], EMIT_MANUAL_ONLY
       if (EMIT_MANUAL_ONLY_RULES) results.push({ ruleId: "ACT-R84(link)", type: "Best Practice", impact: "moderate", description: "Link opens in a new window/tab without warning", element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
     }
   });
+  if (visibleBlankTargetLinks > 0) {
+    pushStat("ACT-R84", visibleBlankTargetLinks, "element");
+  }
 
   // ════════════════════════════════════════════════════════════════════════
   // ACT-R91/R92/R93: letter/word/line-height locked with !important (WCAG 1.4.12)
@@ -108,13 +113,16 @@ export function runStructureMiscRules(results: ScanRawResult[], EMIT_MANUAL_ONLY
   // ════════════════════════════════════════════════════════════════════════
   // ACT-R98: Section landmark with no heading or accessible label
   // ════════════════════════════════════════════════════════════════════════
-  document.querySelectorAll("main, nav, aside, section, [role='region'], [role='complementary']").forEach((el) => {
-    if (!isVisible(el)) return;
+  const visibleLandmarks = Array.from(document.querySelectorAll("main, nav, aside, section, [role='region'], [role='complementary']")).filter((el) => isVisible(el));
+  visibleLandmarks.forEach((el) => {
     if (!!el.querySelector("h1,h2,h3,h4,h5,h6")) return;
     if (el.getAttribute("aria-label")?.trim()) return;
     if (el.getAttribute("aria-labelledby")) return;
     if (EMIT_MANUAL_ONLY_RULES) results.push({ ruleId: "ACT-R98", type: "Potential Issue", impact: "minor", description: `${el.tagName.toLowerCase()} landmark region has no heading or accessible label`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
   });
+  if (visibleLandmarks.length > 0) {
+    pushStat("ACT-R98", visibleLandmarks.length, "element");
+  }
 
   // ACT-R100: PDF link without accessible alternative
   document.querySelectorAll("a[href]").forEach((el) => {

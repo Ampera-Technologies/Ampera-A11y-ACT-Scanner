@@ -9,13 +9,49 @@ import {
   qaPagesTable,
   qaLinksTable,
   qaImagesTable,
+  ruleExecutionStatusesTable,
 } from "@workspace/db";
 import { eq, and, sql, or, inArray, notInArray, lt } from "drizzle-orm";
 import { scanPage, resetBrowserInstance, setScanConcurrency, fetchRawHtmlViaBrowser } from "./scanner";
 import { runQALinkChecker } from "./qaLinkChecker";
 import { logger } from "./logger";
-import { randomBytes, createHash } from "crypto";
+import { randomBytes } from "crypto";
 import { enqueueIssueAssessments, shouldQueueAIAssessments } from "./ai-assessment";
+import {
+  classifyStaticHtml,
+  hashPreflightHtml,
+  redactProvenanceUrl,
+  runStaticHtmlPreflight,
+  shouldRunStaticPreflight,
+  type StaticHtmlPreflight,
+} from "./httpPreflight";
+import {
+  getRuleExecutionStatuses,
+  getSelectedRuleIds,
+  normalizeRuleId,
+  RULE_REGISTRY,
+  reconcileRuleExecutionStatuses,
+  type RuleExecutionStatus,
+} from "./browser/registry";
+
+async function persistRuleStatuses(
+  pageId: number,
+  statuses: readonly RuleExecutionStatus[],
+  carriedForward = false,
+): Promise<void> {
+  if (!statuses.length) return;
+  const values = statuses.map((status) =>
+    `(${pageId}, '${status.ruleId.replace(/'/g, "''")}', '${status.status}', '${status.executionTier}', ${carriedForward})`,
+  ).join(",");
+  await pool.query(
+    `INSERT INTO rule_execution_statuses
+       (page_result_id, rule_id, status, execution_tier, carried_forward)
+     VALUES ${values}
+     ON CONFLICT (page_result_id, rule_id) DO UPDATE SET
+       status = EXCLUDED.status, execution_tier = EXCLUDED.execution_tier,
+       carried_forward = EXCLUDED.carried_forward`,
+  );
+}
 
 const accessibilityIssueFields = {
   id: accessibilityIssuesTable.id,
@@ -112,6 +148,14 @@ const pageResultFields = {
   pageHtml: pageResultsTable.pageHtml,
   contentHash: pageResultsTable.contentHash,
   carriedForward: pageResultsTable.carriedForward,
+  finalUrl: pageResultsTable.finalUrl,
+  httpStatus: pageResultsTable.httpStatus,
+  contentType: pageResultsTable.contentType,
+  responseCapturedAt: pageResultsTable.responseCapturedAt,
+  acquisitionMethod: pageResultsTable.acquisitionMethod,
+  proxyStrategy: pageResultsTable.proxyStrategy,
+  rawHtmlHash: pageResultsTable.rawHtmlHash,
+  renderedDomHash: pageResultsTable.renderedDomHash,
 };
 
 // ── WAF token store ───────────────────────────────────────────────────────────
@@ -149,54 +193,8 @@ interface ScanOptions {
 // plain HTTP GET — cheap enough to run for every page. Script bodies and
 // whitespace are stripped so rotating nonces/CSRF tokens don't force rescans.
 
-function normalizeRawHtml(html: string): string {
-  return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "<script></script>")
-    .replace(/\snonce="[^"]*"/gi, "")
-    .replace(/<meta[^>]*csrf[^>]*>/gi, "")
-    .replace(/\s+/g, " ");
-}
-
 function hashRawHtml(html: string): string {
-  return createHash("sha256").update(normalizeRawHtml(html)).digest("hex").slice(0, 32);
-}
-
-/**
- * Fetch the raw HTML of a URL and return its normalized content hash, or null
- * when the fetch fails, is non-HTML, or looks like a bot-challenge page (a
- * volatile challenge body must never be treated as page content).
- */
-async function fetchRawContentHash(url: string): Promise<string | null> {
-  try {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 12_000);
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        signal: ac.signal,
-        redirect: "follow",
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-          Accept: "text/html,application/xhtml+xml",
-        },
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res.ok) return null;
-    const ct = res.headers.get("content-type") ?? "";
-    if (ct && !ct.includes("html")) return null;
-    const body = await res.text();
-    if (!body) return null;
-    const lower = body.slice(0, 4000).toLowerCase();
-    if (lower.includes("just a moment") || lower.includes("verifying your connection") || lower.includes("cf-challenge")) {
-      return null;
-    }
-    return hashRawHtml(body);
-  } catch {
-    return null;
-  }
+  return hashPreflightHtml(html);
 }
 
 /**
@@ -213,14 +211,45 @@ function urlVariants(url: string): string[] {
   return variants;
 }
 
-async function tryCarryForward(
+export async function tryCarryForward(
   scanId: number,
   pageId: number,
   url: string,
   rawHash: string,
   options: ScanOptions,
+  preflight?: StaticHtmlPreflight,
+  provenance?: {
+    finalUrl?: string | null;
+    httpStatus?: number | null;
+    contentType?: string | null;
+    responseCapturedAt?: Date | null;
+    acquisitionMethod?: string | null;
+    proxyStrategy?: string | null;
+    renderedDomHash?: string | null;
+  },
 ): Promise<boolean> {
-  const variants = urlVariants(url);
+  const variants = [...new Set([
+    ...urlVariants(url),
+    ...urlVariants(redactProvenanceUrl(url)),
+  ])];
+  const [currentScan] = await db
+    .select({
+      userId: scanSessionsTable.userId,
+      siteId: scanSessionsTable.siteId,
+      projectId: scanSessionsTable.projectId,
+      groupId: scanSessionsTable.groupId,
+      options: scanSessionsTable.options,
+    })
+    .from(scanSessionsTable)
+    .where(eq(scanSessionsTable.id, scanId))
+    .limit(1);
+  if (!currentScan) return false;
+  const currentSource =
+    currentScan.options &&
+    typeof currentScan.options === "object" &&
+    "source" in currentScan.options
+      ? String((currentScan.options as Record<string, unknown>).source ?? "")
+      : "";
   const [prev] = await db
     .select({
       id: pageResultsTable.id,
@@ -230,43 +259,59 @@ async function tryCarryForward(
       screenshot: pageResultsTable.screenshot,
       pageHtml: pageResultsTable.pageHtml,
       loadDurationMs: pageResultsTable.loadDurationMs,
+      finalUrl: pageResultsTable.finalUrl,
+      httpStatus: pageResultsTable.httpStatus,
+      contentType: pageResultsTable.contentType,
+      responseCapturedAt: pageResultsTable.responseCapturedAt,
+      acquisitionMethod: pageResultsTable.acquisitionMethod,
+      proxyStrategy: pageResultsTable.proxyStrategy,
+      rawHtmlHash: pageResultsTable.rawHtmlHash,
+      renderedDomHash: pageResultsTable.renderedDomHash,
     })
     .from(pageResultsTable)
+    .innerJoin(scanSessionsTable, eq(scanSessionsTable.id, pageResultsTable.scanId))
     .where(
       and(
         inArray(pageResultsTable.url, variants),
         eq(pageResultsTable.status, "completed"),
         sql`${pageResultsTable.errorMessage} IS NULL`,
-        eq(pageResultsTable.contentHash, rawHash),
+        or(
+          eq(pageResultsTable.contentHash, rawHash),
+          eq(pageResultsTable.rawHtmlHash, rawHash),
+        ),
         sql`${pageResultsTable.scanId} != ${scanId}`,
+        sql`${scanSessionsTable.userId} IS NOT DISTINCT FROM ${currentScan.userId}`,
+        sql`${scanSessionsTable.siteId} IS NOT DISTINCT FROM ${currentScan.siteId}`,
+        sql`${scanSessionsTable.projectId} IS NOT DISTINCT FROM ${currentScan.projectId}`,
+        sql`${scanSessionsTable.groupId} IS NOT DISTINCT FROM ${currentScan.groupId}`,
+        sql`COALESCE(${scanSessionsTable.options}->>'source', '') = ${currentSource}`,
       ),
     )
     .orderBy(sql`${pageResultsTable.id} DESC`)
     .limit(1);
   if (!prev) return false;
 
-  const prevIssues = await db
+  let carriedIssueIds: number[] = [];
+  const carried = await db.transaction(async (tx) => {
+   const prevIssues = await tx
     .select(accessibilityIssueFields)
     .from(accessibilityIssuesTable)
     .where(eq(accessibilityIssuesTable.pageId, prev.id));
-  const selectedRuleIds =
-    options.rules && options.rules.length > 0
-      ? new Set(options.rules.map((rule) => rule.toUpperCase()))
-      : null;
+  const selectedRuleIds = getSelectedRuleIds(options.rules);
   const carriedIssues = selectedRuleIds
-    ? prevIssues.filter((issue) => selectedRuleIds.has(issue.ruleId.toUpperCase()))
+    ? prevIssues.filter((issue) => selectedRuleIds.has(normalizeRuleId(issue.ruleId)))
     : prevIssues;
   const carriedCriticalCount = carriedIssues.filter(
     (issue) => issue.impact === "critical",
   ).length;
 
   const interactionStateIds = new Map<number, number>();
-  const previousStates = await db
+  const previousStates = await tx
     .select(pageInteractionStateFields)
     .from(pageInteractionStatesTable)
     .where(eq(pageInteractionStatesTable.pageId, prev.id));
   if (previousStates.length > 0) {
-    const copiedStates = await db
+    const copiedStates = await tx
       .insert(pageInteractionStatesTable)
       .values(
         previousStates.map(({ id: _id, pageId: _pageId, ...state }) => ({
@@ -288,7 +333,7 @@ async function tryCarryForward(
   }
 
   if (carriedIssues.length > 0) {
-    const copiedIssues = await db.insert(accessibilityIssuesTable).values(
+    const copiedIssues = await tx.insert(accessibilityIssuesTable).values(
       carriedIssues.map(({ id: _id, pageId: _pageId, interactionStateId, ...rest }) => ({
         ...rest,
         pageId,
@@ -297,13 +342,141 @@ async function tryCarryForward(
           : null,
       })),
     ) .returning({ id: accessibilityIssuesTable.id });
-    if (shouldQueueAIAssessments(options)) {
-      void enqueueIssueAssessments(copiedIssues.map((issue) => issue.id), url, prev.pageHtml)
-        .catch((err) => logger.warn({ scanId, pageId, err }, "AI assessments could not be queued for carried-forward issues"));
-    }
+    carriedIssueIds = copiedIssues.map((issue) => issue.id);
   }
 
-  await db
+  // Carry forward QA artifacts (page metadata, links, images) so incremental
+  // scans produce complete QA datasets, not just accessibility issues.
+  try {
+    const [prevQaPage] = await tx
+      .select(qaPageFields)
+      .from(qaPagesTable)
+      .where(and(eq(qaPagesTable.scanId, prev.scanId), inArray(qaPagesTable.url, variants)))
+      .orderBy(sql`${qaPagesTable.id} DESC`)
+      .limit(1);
+    if (prevQaPage) {
+      const [existing] = await tx
+        .select({ id: qaPagesTable.id })
+        .from(qaPagesTable)
+        .where(and(eq(qaPagesTable.scanId, scanId), inArray(qaPagesTable.url, variants)))
+        .limit(1);
+      if (!existing) {
+        const { id: _id, scanId: _sid, ...qaRest } = prevQaPage;
+        await tx.insert(qaPagesTable).values({
+          ...qaRest,
+          scanId,
+          url: redactProvenanceUrl(qaRest.url),
+        });
+      }
+    }
+    const prevLinks = await tx
+      .select(qaLinkFields)
+      .from(qaLinksTable)
+      .where(and(eq(qaLinksTable.scanId, prev.scanId), inArray(qaLinksTable.sourceUrl, variants)));
+    if (prevLinks.length > 0) {
+      await tx.insert(qaLinksTable).values(
+        prevLinks.map(({ id: _id, scanId: _sid, ...rest }) => ({
+          ...rest,
+          scanId,
+          sourceUrl: redactProvenanceUrl(rest.sourceUrl),
+          destUrl: redactProvenanceUrl(rest.destUrl),
+        })),
+      );
+    }
+    const prevImages = await tx
+      .select(qaImageFields)
+      .from(qaImagesTable)
+      .where(and(eq(qaImagesTable.scanId, prev.scanId), inArray(qaImagesTable.sourceUrl, variants)));
+    if (prevImages.length > 0) {
+      await tx.insert(qaImagesTable).values(
+        prevImages.map(({ id: _id, scanId: _sid, ...rest }) => ({
+          ...rest,
+          scanId,
+          sourceUrl: redactProvenanceUrl(rest.sourceUrl),
+          src: redactProvenanceUrl(rest.src),
+        })),
+      );
+    }
+  } catch (qaErr) {
+    throw new Error(`Incremental QA carry-forward failed: ${String(qaErr)}`);
+  }
+
+  // Carry forward rule_page_stats so scoring uses true CRr even on unchanged pages
+  try {
+    const prevStatsResult = await tx.execute(
+      sql`SELECT rule_id, total_checked, scope FROM rule_page_stats WHERE page_result_id = ${prev.id}`,
+    ) as unknown as { rows: Array<{ rule_id: string; total_checked: number; scope: string }> };
+    const prevStatsRows = prevStatsResult.rows;
+    if (prevStatsRows.length > 0) {
+      const carriedStats = selectedRuleIds
+        ? prevStatsRows.filter((row) => selectedRuleIds.has(normalizeRuleId(row.rule_id)))
+        : prevStatsRows;
+      const registryIds = new Set(RULE_REGISTRY.map((rule) => rule.id));
+      const currentStats = carriedStats.filter((row) => registryIds.has(normalizeRuleId(row.rule_id)));
+      const vals = currentStats
+        .map((r) => `(${pageId}, '${normalizeRuleId(r.rule_id).replace(/'/g, "''")}', ${r.total_checked}, '${r.scope}')`)
+        .join(",");
+      if (vals) {
+        await tx.execute(sql.raw(
+          `INSERT INTO rule_page_stats (page_result_id, rule_id, total_checked, scope)
+           VALUES ${vals}
+           ON CONFLICT (page_result_id, rule_id) DO NOTHING`,
+        ));
+      }
+    }
+  } catch (statsCarryErr) {
+    throw new Error(`Incremental rule applicability carry-forward failed: ${String(statsCarryErr)}`);
+  }
+
+  // Carry forward the registry decisions as well. Recompute the selection
+  // filter from this scan's options so changing scope never resurrects a
+  // previously selected rule.
+  try {
+    const previousStatuses = await tx
+      .select({
+        rule_id: ruleExecutionStatusesTable.ruleId,
+        status: ruleExecutionStatusesTable.status,
+        execution_tier: ruleExecutionStatusesTable.executionTier,
+      })
+      .from(ruleExecutionStatusesTable)
+      .where(eq(ruleExecutionStatusesTable.pageResultId, prev.id));
+    const selected = getSelectedRuleIds(options.rules);
+    const previousByRule = new Map(
+      previousStatuses.map((row) => [row.rule_id.toUpperCase(), row]),
+    );
+    const reconciled = reconcileRuleExecutionStatuses(
+      [...previousByRule.values()].map((row) => ({
+        ruleId: row.rule_id,
+        status: row.status as RuleExecutionStatus["status"],
+        executionTier: row.execution_tier as RuleExecutionStatus["executionTier"],
+      })),
+      selected,
+    );
+    if (reconciled.length > 0) {
+      await tx.insert(ruleExecutionStatusesTable)
+        .values(reconciled.map((status) => ({
+          pageResultId: pageId,
+          ruleId: status.ruleId,
+          status: status.status,
+          executionTier: status.executionTier,
+          carriedForward: true,
+        })))
+        .onConflictDoUpdate({
+          target: [ruleExecutionStatusesTable.pageResultId, ruleExecutionStatusesTable.ruleId],
+          set: {
+            status: sql`excluded.status`,
+            executionTier: sql`excluded.execution_tier`,
+            carriedForward: true,
+          },
+        });
+    }
+  } catch (statusCarryErr) {
+    throw new Error(`Incremental rule execution status carry-forward failed: ${String(statusCarryErr)}`);
+  }
+
+  // Mark skipped only after every evidence copy has succeeded. The caller
+  // falls through to a fresh browser scan if any preceding operation throws.
+  await tx
     .update(pageResultsTable)
     .set({
       status: "completed",
@@ -316,82 +489,29 @@ async function tryCarryForward(
       screenshot: prev.screenshot,
       pageHtml: prev.pageHtml,
       contentHash: rawHash,
+      finalUrl: preflight?.finalUrl ?? provenance?.finalUrl ?? null,
+      httpStatus: preflight?.status ?? provenance?.httpStatus ?? null,
+      contentType: preflight?.contentType ?? provenance?.contentType ?? null,
+      responseCapturedAt: preflight?.capturedAt ?? provenance?.responseCapturedAt ?? new Date(),
+      acquisitionMethod: preflight?.acquisitionMethod ?? provenance?.acquisitionMethod ?? "chromium",
+      proxyStrategy: preflight?.proxyStrategy ?? provenance?.proxyStrategy ?? (options.proxyPacUrl ? "configured_pac" : "direct"),
+      rawHtmlHash: rawHash,
+      renderedDomHash: provenance?.renderedDomHash ?? prev.renderedDomHash,
       carriedForward: true,
     })
     .where(eq(pageResultsTable.id, pageId));
-
-  // Carry forward QA artifacts (page metadata, links, images) so incremental
-  // scans produce complete QA datasets, not just accessibility issues.
-  try {
-    const [prevQaPage] = await db
-      .select(qaPageFields)
-      .from(qaPagesTable)
-      .where(and(eq(qaPagesTable.scanId, prev.scanId), inArray(qaPagesTable.url, variants)))
-      .orderBy(sql`${qaPagesTable.id} DESC`)
-      .limit(1);
-    if (prevQaPage) {
-      const [existing] = await db
-        .select({ id: qaPagesTable.id })
-        .from(qaPagesTable)
-        .where(and(eq(qaPagesTable.scanId, scanId), inArray(qaPagesTable.url, variants)))
-        .limit(1);
-      if (!existing) {
-        const { id: _id, scanId: _sid, ...qaRest } = prevQaPage;
-        await db.insert(qaPagesTable).values({ ...qaRest, scanId });
-      }
-    }
-    const prevLinks = await db
-      .select(qaLinkFields)
-      .from(qaLinksTable)
-      .where(and(eq(qaLinksTable.scanId, prev.scanId), inArray(qaLinksTable.sourceUrl, variants)));
-    if (prevLinks.length > 0) {
-      await db.insert(qaLinksTable).values(
-        prevLinks.map(({ id: _id, scanId: _sid, ...rest }) => ({ ...rest, scanId })),
-      );
-    }
-    const prevImages = await db
-      .select(qaImageFields)
-      .from(qaImagesTable)
-      .where(and(eq(qaImagesTable.scanId, prev.scanId), inArray(qaImagesTable.sourceUrl, variants)));
-    if (prevImages.length > 0) {
-      await db.insert(qaImagesTable).values(
-        prevImages.map(({ id: _id, scanId: _sid, ...rest }) => ({ ...rest, scanId })),
-      );
-    }
-  } catch (qaErr) {
-    logger.warn({ scanId, url, err: String(qaErr) }, "Incremental: QA carry-forward failed — continuing");
-  }
-
-  // Carry forward rule_page_stats so scoring uses true CRr even on unchanged pages
-  try {
-    const prevStatsRes = await pool.query<{ rule_id: string; total_checked: number; scope: string }>(
-      `SELECT rule_id, total_checked, scope FROM rule_page_stats WHERE page_result_id = $1`,
-      [prev.id],
-    );
-    if (prevStatsRes.rows.length > 0) {
-      const carriedStats = selectedRuleIds
-        ? prevStatsRes.rows.filter((row) => selectedRuleIds.has(row.rule_id.toUpperCase()))
-        : prevStatsRes.rows;
-      const vals = carriedStats
-        .map((r) => `(${pageId}, '${r.rule_id.replace(/'/g, "''")}', ${r.total_checked}, '${r.scope}')`)
-        .join(",");
-      if (vals) {
-        await pool.query(
-          `INSERT INTO rule_page_stats (page_result_id, rule_id, total_checked, scope)
-           VALUES ${vals}
-           ON CONFLICT (page_result_id, rule_id) DO NOTHING`,
-        );
-      }
-    }
-  } catch (statsCarryErr) {
-    logger.warn({ scanId, url, err: statsCarryErr }, "Incremental: rule_page_stats carry-forward failed — scoring will use proxy");
-  }
 
   logger.info(
     { scanId, pageId, url, fromPageId: prev.id, issueCount: carriedIssues.length },
     "Incremental: page unchanged — issues carried forward without browser visit",
   );
-  return true;
+   return true;
+  });
+  if (carriedIssueIds.length > 0 && shouldQueueAIAssessments(options)) {
+    void enqueueIssueAssessments(carriedIssueIds, url, prev.pageHtml)
+      .catch((err) => logger.warn({ scanId, pageId, err }, "AI assessments could not be queued for carried-forward issues"));
+  }
+  return carried;
 }
 
 /** Read the configured browser pool size (app_settings.scan_concurrency, default 4, max 8). */
@@ -434,6 +554,8 @@ async function getGlobalScanDelayMs(): Promise<number> {
 }
 
 const activeScanControllers = new Map<number, AbortController>();
+const activeScanRuns = new Set<Promise<void>>();
+let scanShutdownRequested = false;
 const pausedScans = new Set<number>();
 const queuedRetryUrls = new Map<number, Set<string>>();
 // Tracks how many times each URL has been auto-retried within the current scan run
@@ -481,11 +603,12 @@ async function waitIfPaused(
   return true;
 }
 
-export async function startScan(
+async function runScan(
   scanId: number,
   urls: string[],
   options: ScanOptions = {},
 ): Promise<void> {
+  if (scanShutdownRequested) return;
   const controller = new AbortController();
   activeScanControllers.set(scanId, controller);
 
@@ -859,6 +982,34 @@ export async function startScan(
   }
 }
 
+/** Start a scan while retaining a settlement handle for graceful shutdown. */
+export function startScan(
+  scanId: number,
+  urls: string[],
+  options: ScanOptions = {},
+): Promise<void> {
+  if (scanShutdownRequested) return Promise.resolve();
+  const run = runScan(scanId, urls, options);
+  activeScanRuns.add(run);
+  void run.then(
+    () => activeScanRuns.delete(run),
+    () => activeScanRuns.delete(run),
+  );
+  return run;
+}
+
+export async function waitForScanWork(timeoutMs: number): Promise<boolean> {
+  if (activeScanRuns.size === 0) return true;
+  const work = Promise.all([...activeScanRuns].map((run) => run.catch(() => undefined)));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+  });
+  const settled = await Promise.race([work.then(() => true), timeout]);
+  if (timer) clearTimeout(timer);
+  return settled;
+}
+
 export function queueRetryUrl(scanId: number, url: string): boolean {
   const controller = activeScanControllers.get(scanId);
   if (!controller || controller.signal.aborted) return false;
@@ -1040,18 +1191,57 @@ async function scanSinglePage(
     // is always stored. In incremental mode, an unchanged hash lets us carry
     // the previous scan's issues forward and skip the browser entirely.
     let rawHash: string | null = null;
+    // Node fetch has no supported PAC/direct-proxy path here. Never silently
+    // bypass a proxy that Chromium will use; Chromium remains authoritative.
+    const systemProxyPacUrl = await getSystemProxyPacUrl();
+    const configuredProxyPacUrl = options.proxyPacUrl || systemProxyPacUrl;
+    const staticPreflightPromise = shouldRunStaticPreflight(configuredProxyPacUrl)
+      ? runStaticHtmlPreflight(url, { proxyStrategy: "direct" })
+      : Promise.resolve(undefined);
+    let staticPreflight: StaticHtmlPreflight | undefined;
     if (options.incremental) {
       await setPageStatus(pageId, "checking");
-      rawHash = await fetchRawContentHash(url);
-      if (!rawHash) {
+      staticPreflight = await staticPreflightPromise;
+      rawHash = staticPreflight?.rawHtmlHash ?? null;
+      if (!rawHash && !configuredProxyPacUrl && staticPreflight?.status == null) {
         // WAF-blocked plain fetch (e.g. 403) — retry through a stealth browser
         // with all non-document resources blocked. Still far cheaper than a
         // full scan when the page turns out to be unchanged.
         const body = await fetchRawHtmlViaBrowser(url);
-        if (body) rawHash = hashRawHtml(body);
+        if (body && classifyStaticHtml(undefined, "text/html", body) === "ok") {
+          rawHash = hashRawHtml(body);
+        }
       }
-    if (rawHash && (await tryCarryForward(scanId, pageId, url, rawHash, options))) {
-        return;
+      if (rawHash) {
+        try {
+          if (await tryCarryForward(scanId, pageId, url, rawHash, options, staticPreflight)) {
+            return;
+          }
+        } catch (carryErr) {
+          // Carry-forward is an optimization, never the source of a failed
+          // page. Reset the claimed row and persist the already-computed fresh
+          // browser result below.
+          logger.warn({ scanId, pageId, url, err: carryErr }, "Incremental carry-forward failed — scanning fresh result");
+          try {
+            await db.delete(accessibilityIssuesTable)
+              .where(eq(accessibilityIssuesTable.pageId, pageId));
+            await db.delete(pageInteractionStatesTable)
+              .where(eq(pageInteractionStatesTable.pageId, pageId));
+            await db.delete(qaPagesTable)
+              .where(and(eq(qaPagesTable.scanId, scanId), inArray(qaPagesTable.url, urlVariants(url))));
+            await db.delete(qaLinksTable)
+              .where(and(eq(qaLinksTable.scanId, scanId), inArray(qaLinksTable.sourceUrl, urlVariants(url))));
+            await db.delete(qaImagesTable)
+              .where(and(eq(qaImagesTable.scanId, scanId), inArray(qaImagesTable.sourceUrl, urlVariants(url))));
+            await pool.query("DELETE FROM rule_page_stats WHERE page_result_id = $1", [pageId]);
+            await pool.query("DELETE FROM rule_execution_statuses WHERE page_result_id = $1", [pageId]);
+          } catch (cleanupErr) {
+            logger.error({ scanId, pageId, url, err: cleanupErr }, "Incremental carry-forward cleanup failed");
+          }
+          await db.update(pageResultsTable)
+            .set({ status: "pending", carriedForward: false, errorMessage: null })
+            .where(eq(pageResultsTable.id, pageId));
+        }
       }
     }
 
@@ -1086,12 +1276,11 @@ async function scanSinglePage(
     // we convert the thrown error into a synthetic failed result so that the
     // shouldAutoRetry logic below still applies (Phase 2 queue) instead of
     // falling into the outer catch which skips retry altogether.
-    const systemProxyPacUrl = await getSystemProxyPacUrl();
     // Fetch the raw content hash in parallel with the browser scan so every
     // completed page stores a baseline for future incremental scans.
     const rawHashPromise: Promise<string | null> = rawHash
       ? Promise.resolve(rawHash)
-      : fetchRawContentHash(url);
+      : staticPreflightPromise.then((preflight) => preflight?.rawHtmlHash ?? null).catch(() => null);
     let result: Awaited<ReturnType<typeof scanPage>>;
     const scanStart = Date.now();
     try {
@@ -1107,6 +1296,7 @@ async function scanSinglePage(
           fallbackProxyPacUrl: !options.proxyPacUrl && systemProxyPacUrl && !proxyFailedUrls.get(scanId)?.has(url) ? systemProxyPacUrl : undefined,
           disableJavascript: options.disableJavascript,
           signal: urlAbortController.signal,
+          staticPreflightPromise,
           onStage: async (stage: string) => {
             await setPageStatus(pageId, stage);
           },
@@ -1165,6 +1355,30 @@ async function scanSinglePage(
 
     // Update the primary row with full result data
     const scanDurationMs = Date.now() - scanStart;
+    const resolvedPreflight =
+      staticPreflight ??
+      (await staticPreflightPromise.catch(() => undefined));
+    const provenance = result.httpProvenance ?? {
+      requestedUrl: resolvedPreflight?.requestedUrl ?? url,
+      finalUrl: resolvedPreflight?.finalUrl,
+      httpStatus: result.httpStatus ?? resolvedPreflight?.status,
+      contentType: resolvedPreflight?.contentType,
+      responseCapturedAt: resolvedPreflight?.capturedAt ?? new Date(),
+      acquisitionMethod: "chromium" as const,
+      proxyStrategy: options.proxyPacUrl ? "configured_pac" as const : "direct" as const,
+      rawHtmlHash: resolvedPreflight?.rawHtmlHash,
+    };
+    // A static error/challenge/empty response is never used for incremental
+    // eligibility above. Chromium may nevertheless reach the real page (for
+    // example through a proxy), so retain its hash as provenance when the
+    // authoritative scan completes.
+    const completedRawHash =
+      pageStatus === "completed"
+        ? ((await rawHashPromise.catch(() => null)) ??
+          (result.rawHtml
+            ? hashRawHtml(result.rawHtml)
+            : null))
+        : null;
     logger.info(
       { scanId, url, pageId, pageStatus, issueCount, loadDurationMs: result.loadDurationMs ?? null, scanDurationMs },
       "TIMING: writing page result to DB",
@@ -1185,11 +1399,15 @@ async function scanSinglePage(
         // a hash on a failed page could cause a bad carry-forward later.
         // Fall back to the browser's raw navigation response when the plain
         // HTTP fetch was WAF-blocked (e.g. Keysight returns 403 to plain GETs).
-        contentHash:
-          pageStatus === "completed"
-            ? ((await rawHashPromise.catch(() => null)) ??
-              (result.rawHtml ? hashRawHtml(result.rawHtml) : null))
-            : null,
+        contentHash: completedRawHash,
+        finalUrl: provenance.finalUrl ?? null,
+        httpStatus: provenance.httpStatus ?? null,
+        contentType: provenance.contentType ?? null,
+        responseCapturedAt: provenance.responseCapturedAt,
+        acquisitionMethod: provenance.acquisitionMethod,
+        proxyStrategy: provenance.proxyStrategy,
+        rawHtmlHash: completedRawHash,
+        renderedDomHash: result.httpProvenance?.renderedDomHash ?? null,
         carriedForward: false,
       })
       .where(eq(pageResultsTable.id, pageId));
@@ -1220,6 +1438,24 @@ async function scanSinglePage(
       );
 
     logger.info({ scanId, url, pageId, issueCount }, "Inserting issues into DB");
+    // Persist one registry decision per rule/page, including failures. This
+    // keeps "no finding", "not applicable", and "not selected" distinct.
+    try {
+      const selected = getSelectedRuleIds(options.rules);
+      const statuses = result.ruleStatuses?.length
+        ? result.ruleStatuses
+        : getRuleExecutionStatuses(selected, new Set());
+      await persistRuleStatuses(
+        pageId,
+        result.error || result.notAvailable
+          ? statuses.map((status) => status.status === "not-selected"
+            ? status
+            : { ...status, status: "failed" as const })
+          : statuses,
+      );
+    } catch (statusErr) {
+      logger.warn({ scanId, url, err: statusErr }, "Failed to persist rule execution statuses");
+    }
     const interactionStateIds = new Map<string, number>();
     if ((result.interactionStates?.length ?? 0) > 0) {
       const insertedStates = await db
@@ -1490,8 +1726,10 @@ function isReadOnlyError(err: unknown): boolean {
  * Suppression window: 10 minutes, then one more attempt before extending again.
  */
 let _watchdogSuspendedUntil = 0;
+let scanWatchdogTimer: ReturnType<typeof setInterval> | undefined;
 
 export function startScanWatchdog(intervalMs = 60_000): void {
+  if (scanWatchdogTimer) return;
   const MID_FLIGHT = [
     "navigating",
     "scanning",
@@ -1501,7 +1739,8 @@ export function startScanWatchdog(intervalMs = 60_000): void {
   ] as const;
   const RESTARTABLE = ["pending", "requeued"] as const;
 
-  setInterval(async () => {
+  scanWatchdogTimer = setInterval(async () => {
+    if (scanShutdownRequested) return;
     // If the database is in read-only mode, skip writes entirely and avoid
     // flooding the log.  Re-attempt every 10 minutes in case storage was
     // freed up or the connection was switched to the primary.
@@ -1524,6 +1763,7 @@ export function startScanWatchdog(intervalMs = 60_000): void {
         );
 
       for (const session of runningSessions) {
+        if (scanShutdownRequested) break;
         if (activeScanControllers.has(session.id)) continue;
 
         logger.warn(
@@ -1600,4 +1840,18 @@ export function startScanWatchdog(intervalMs = 60_000): void {
       }
     }
   }, intervalMs);
+}
+
+/** Stop background scan work during a graceful process shutdown. */
+export function stopScanWork(): void {
+  scanShutdownRequested = true;
+  if (scanWatchdogTimer) {
+    clearInterval(scanWatchdogTimer);
+    scanWatchdogTimer = undefined;
+  }
+  for (const controller of activeScanControllers.values()) controller.abort();
+}
+
+export function isScanWorkStopping(): boolean {
+  return scanShutdownRequested;
 }

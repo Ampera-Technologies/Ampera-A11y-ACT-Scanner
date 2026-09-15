@@ -3,16 +3,31 @@ import { Button } from "@/components/ui/button";
 import { Loader2, WifiOff, RefreshCw, Clock } from "lucide-react";
 
 export default function MaintenancePage() {
-  const { status, lastChecked, retryNow } = useAppStatus();
+  const { status, lastChecked, failureReason, retryNow } = useAppStatus();
   const checking = status === "checking";
 
   const formattedTime = lastChecked
     ? lastChecked.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
     : null;
+  const reasonMessage =
+    failureReason === "timeout"
+      ? "The server took too long to respond."
+      : failureReason === "network"
+        ? "The connection to the server could not be reached."
+        : failureReason === "http"
+          ? "The server is currently reporting an error."
+          : null;
+  const statusAnnouncement = checking
+    ? "Checking service status."
+    : `Service unavailable.${reasonMessage ? ` ${reasonMessage}` : ""} Retrying automatically.`;
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-background px-4">
       <div className="w-full max-w-md text-center space-y-8">
+        <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+          {statusAnnouncement}
+        </div>
+
         {/* Logo */}
         <div className="flex justify-center">
           <img
@@ -52,7 +67,7 @@ export default function MaintenancePage() {
           <p className="text-muted-foreground leading-relaxed">
             {checking
               ? "Please wait while we check the connection to the server."
-              : "The ACT Platform is temporarily unavailable. This may be due to scheduled maintenance or an unexpected outage. We're working to restore service as quickly as possible."}
+              : `${reasonMessage || "The ACT Platform is temporarily unavailable."} This may be due to scheduled maintenance or an unexpected outage. We're working to restore service as quickly as possible.`}
           </p>
         </div>
 
@@ -63,7 +78,11 @@ export default function MaintenancePage() {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-destructive opacity-60" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-destructive" />
             </span>
-            Server unreachable
+            {failureReason === "timeout"
+              ? "Server response timed out"
+              : failureReason === "http"
+                ? "Server returned an error"
+                : "Server unreachable"}
           </div>
         )}
 

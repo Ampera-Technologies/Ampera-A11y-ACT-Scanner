@@ -46,6 +46,7 @@ import { getEffectivePermissions, canAccessSite, getEffectiveSites } from "../li
 import { isUrlLikeScanName, SCAN_NAME_URL_ERROR } from "../lib/scan-name";
 import { getRulesForLevels, ALL_SCAN_LEVELS } from "../lib/scanner";
 import { retryAIAssessment, serializeAssessment } from "../lib/ai-assessment";
+import { aggregateRuleCoverage, classifyScanConfidence } from "../lib/ruleCoverage";
 
 const router: IRouter = Router();
 const upload = multer({
@@ -1040,6 +1041,15 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
       scannedAt: pageResultsTable.scannedAt,
       loadDurationMs: pageResultsTable.loadDurationMs,
       scanDurationMs: pageResultsTable.scanDurationMs,
+      finalUrl: pageResultsTable.finalUrl,
+      httpStatus: pageResultsTable.httpStatus,
+      contentType: pageResultsTable.contentType,
+      responseCapturedAt: pageResultsTable.responseCapturedAt,
+      acquisitionMethod: pageResultsTable.acquisitionMethod,
+      proxyStrategy: pageResultsTable.proxyStrategy,
+      rawHtmlHash: pageResultsTable.rawHtmlHash,
+      renderedDomHash: pageResultsTable.renderedDomHash,
+       carriedForward: pageResultsTable.carriedForward,
     })
     .from(pageResultsTable)
     .where(eq(pageResultsTable.scanId, row.id));
@@ -1095,6 +1105,48 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
       wafToken,
     };
   });
+  const detailStatuses = await pool.query<{
+    rule_id: string;
+    status: "not-selected" | "not-applicable" | "executed" | "failed";
+    execution_tier: "automatic" | "manual";
+  }>(
+    `SELECT rs.rule_id, rs.status, rs.execution_tier
+       FROM rule_execution_statuses rs
+       JOIN page_results pr ON pr.id = rs.page_result_id
+      WHERE pr.scan_id = $1`,
+    [row.id],
+  );
+  const detailCoverage = aggregateRuleCoverage(detailStatuses.rows.map((status) => ({
+    ruleId: status.rule_id,
+    status: status.status,
+    executionTier: status.execution_tier,
+  })), row.totalUrls);
+  const [detailFallback, detailPotential] = await Promise.all([
+    pool.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM page_results pr
+        WHERE pr.scan_id = $1 AND pr.status = 'completed'
+          AND NOT EXISTS (SELECT 1 FROM rule_page_stats rps WHERE rps.page_result_id = pr.id)`,
+      [row.id],
+    ),
+    pool.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM accessibility_issues ai
+         JOIN page_results pr ON pr.id = ai.page_id
+        WHERE pr.scan_id = $1 AND ai.rule_type = 'Potential Issue'`,
+      [row.id],
+    ),
+  ]);
+  const detailConfidence = classifyScanConfidence({
+    totalPages: row.totalUrls,
+    completedPages: row.scannedUrls,
+    failedPages: row.failedUrls,
+    automaticApplicabilityCoverage: detailCoverage.automaticApplicabilityCoverage,
+    manualUnresolved: detailCoverage.rules
+      .filter((rule) => rule.executionTier === "manual")
+      .reduce((sum, rule) => sum + rule.executed, 0),
+    potentialUnresolved: Number(detailPotential.rows[0]?.n ?? 0),
+    fallbackDenominatorPages: Number(detailFallback.rows[0]?.n ?? 0),
+    carriedForwardPages: pages.filter((page) => page.carriedForward).length,
+  });
 
   res.json({
     ...row,
@@ -1104,6 +1156,9 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
     initiatorName: row.initiatorName ?? null,
     initiatorRole: row.initiatorRole ?? null,
     pages: pagesWithIssues,
+    ruleCoverage: detailCoverage.rules,
+    automaticApplicabilityCoverage: detailCoverage.automaticApplicabilityCoverage,
+    confidence: detailConfidence,
   });
 });
 
@@ -1136,6 +1191,25 @@ router.get("/scans/:scanId/pages/:pageId/report-data", requireAuth, async (req, 
       pr.scanned_at,
       pr.load_duration_ms,
       pr.scan_duration_ms,
+      pr.final_url,
+      pr.http_status,
+      pr.content_type,
+      pr.response_captured_at,
+      pr.acquisition_method,
+      pr.proxy_strategy,
+      pr.raw_html_hash,
+      pr.rendered_dom_hash,
+      COALESCE(
+        (SELECT jsonb_agg(jsonb_build_object(
+          'ruleId', rs.rule_id,
+          'status', rs.status,
+          'executionTier', rs.execution_tier,
+          'carriedForward', rs.carried_forward
+        ) ORDER BY rs.rule_id)
+         FROM rule_execution_statuses rs
+        WHERE rs.page_result_id = pr.id),
+        '[]'::jsonb
+      ) AS rule_statuses,
       COALESCE(
         jsonb_agg(
           jsonb_build_object(
@@ -1207,6 +1281,17 @@ router.get("/scans/:scanId/pages/:pageId/report-data", requireAuth, async (req, 
       scannedAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : null,
       loadDurationMs: row.load_duration_ms ?? null,
       scanDurationMs: row.scan_duration_ms ?? null,
+      finalUrl: row.final_url ?? null,
+      httpStatus: row.http_status ?? null,
+      contentType: row.content_type ?? null,
+      responseCapturedAt: row.response_captured_at
+        ? new Date(row.response_captured_at).toISOString()
+        : null,
+      acquisitionMethod: row.acquisition_method ?? null,
+      proxyStrategy: row.proxy_strategy ?? null,
+      rawHtmlHash: row.raw_html_hash ?? null,
+      renderedDomHash: row.rendered_dom_hash ?? null,
+      ruleStatuses: row.rule_statuses ?? [],
       issues: row.issues ?? [],
     },
   });
@@ -1551,6 +1636,14 @@ router.get("/scans/:id/status", async (req, res): Promise<void> => {
     loadDurationMs: pageResultsTable.loadDurationMs,
     scanDurationMs: pageResultsTable.scanDurationMs,
     scannedAt: pageResultsTable.scannedAt,
+    finalUrl: pageResultsTable.finalUrl,
+    httpStatus: pageResultsTable.httpStatus,
+    contentType: pageResultsTable.contentType,
+    responseCapturedAt: pageResultsTable.responseCapturedAt,
+    acquisitionMethod: pageResultsTable.acquisitionMethod,
+    proxyStrategy: pageResultsTable.proxyStrategy,
+    rawHtmlHash: pageResultsTable.rawHtmlHash,
+    renderedDomHash: pageResultsTable.renderedDomHash,
   } as const;
 
   const [activePages, recentlyCompleted] = await Promise.all([
@@ -2848,6 +2941,50 @@ router.get("/scans/:id/report", async (req, res): Promise<void> => {
     criticalCount: parseInt(r.critical_count, 10),
   }));
 
+  const [statusRows, denominatorResult, carryResult, potentialResult] = await Promise.all([
+    pool.query<{ rule_id: string; status: "not-selected" | "not-applicable" | "executed" | "failed"; execution_tier: "automatic" | "manual" }>(
+      `SELECT rule_id, status, execution_tier
+         FROM rule_execution_statuses rs
+         JOIN page_results pr ON pr.id = rs.page_result_id
+        WHERE pr.scan_id = $1`,
+      [params.data.id],
+    ),
+    pool.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM page_results pr
+        WHERE pr.scan_id = $1 AND pr.status = 'completed'
+          AND NOT EXISTS (SELECT 1 FROM rule_page_stats rps WHERE rps.page_result_id = pr.id)`,
+      [params.data.id],
+    ),
+    pool.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM page_results
+        WHERE scan_id = $1 AND status = 'completed' AND carried_forward = TRUE`,
+      [params.data.id],
+    ),
+    pool.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM accessibility_issues ai
+         JOIN page_results pr ON pr.id = ai.page_id
+        WHERE pr.scan_id = $1 AND ai.rule_type = 'Potential Issue'`,
+      [params.data.id],
+    ),
+  ]);
+  const coverage = aggregateRuleCoverage(statusRows.rows.map((row) => ({
+    ruleId: row.rule_id,
+    status: row.status,
+    executionTier: row.execution_tier,
+  })), Number(session.totalUrls));
+  const confidence = classifyScanConfidence({
+    totalPages: Number(session.totalUrls),
+    completedPages: Number(session.scannedUrls),
+    failedPages: Number(session.failedUrls),
+    automaticApplicabilityCoverage: coverage.automaticApplicabilityCoverage,
+    manualUnresolved: coverage.rules
+      .filter((rule) => rule.executionTier === "manual")
+      .reduce((sum, rule) => sum + rule.executed, 0),
+    potentialUnresolved: Number(potentialResult.rows[0]?.n ?? 0),
+    fallbackDenominatorPages: Number(denominatorResult.rows[0]?.n ?? 0),
+    carriedForwardPages: Number(carryResult.rows[0]?.n ?? 0),
+  });
+
   res.json({
     scanId: session.id,
     totalPages: session.totalUrls,
@@ -2858,6 +2995,9 @@ router.get("/scans/:id/report", async (req, res): Promise<void> => {
     issuesByWcagLevel,
     topRules,
     pagesWithMostIssues,
+    ruleCoverage: coverage.rules,
+    automaticApplicabilityCoverage: coverage.automaticApplicabilityCoverage,
+    confidence,
   });
 });
 

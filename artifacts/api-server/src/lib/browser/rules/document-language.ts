@@ -280,7 +280,11 @@ export function runDocumentLanguageRules(results: ScanRawResult[], EMIT_MANUAL_O
     const lang = htmlEl.getAttribute("lang")?.trim();
     const BCP47_RE = /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/;
     const visibleText = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
-    if (EMIT_MANUAL_ONLY_RULES && lang && BCP47_RE.test(lang) && visibleText.length > 0) {
+    const isApplicable = !!lang && BCP47_RE.test(lang) && visibleText.length > 0;
+    if (isApplicable) {
+      pushStat("ACT-R109", 1, "page");
+    }
+    if (EMIT_MANUAL_ONLY_RULES && isApplicable) {
       results.push({
         ruleId: "ACT-R109",
         type: "Potential Issue",

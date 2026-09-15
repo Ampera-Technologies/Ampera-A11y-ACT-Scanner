@@ -1,4 +1,4 @@
-const ALLOWED_TAGS = new Set(["p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li", "a", "code", "pre", "blockquote", "h3", "h4", "table", "thead", "tbody", "tfoot", "tr", "th", "td"]);
+const ALLOWED_TAGS = new Set(["p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li", "a", "code", "pre", "blockquote", "h3", "h4", "table", "thead", "tbody", "tfoot", "tr", "th", "td", "figure", "figcaption", "img"]);
 const REMOVE_WITH_CONTENT = new Set(["script", "style", "iframe", "object", "embed", "svg", "math"]);
 
 /**
@@ -26,6 +26,16 @@ export function sanitizeIssueHtml(value: string | null | undefined): string {
       if (/^(https?:|mailto:)/i.test(href)) {
         safe.setAttribute("href", href);
         safe.setAttribute("rel", "noopener noreferrer");
+      }
+    } else if (tag === "img") {
+      const src = element.getAttribute("src") || "";
+      if (!/^\/api\/issues\/\d+\/attachments\/\d+$/.test(src)) return null;
+      safe.setAttribute("src", src);
+      safe.setAttribute("alt", (element.getAttribute("alt") || "").slice(0, 500));
+      safe.setAttribute("loading", "lazy");
+      const width = Number.parseInt(element.style.width, 10);
+      if (Number.isFinite(width) && width >= 20 && width <= 100 && width % 5 === 0) {
+        safe.setAttribute("style", `width:${width}%;height:auto;max-width:100%`);
       }
     }
     children.forEach((child) => safe.appendChild(child));

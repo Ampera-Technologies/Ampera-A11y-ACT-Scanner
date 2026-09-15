@@ -124,22 +124,22 @@ export default function WelcomePage() {
               </div>
               <div className="min-w-0 flex-1 space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-base font-semibold">
-                    Issue tracking for accessibility work in {APP_VERSION}
+                  <h2 className="text-base font-semibold">
+                    More reliable video accessibility review in {APP_VERSION}
                   </h2>
                   <Badge variant="outline" className="text-[10px]">
                     New
                   </Badge>
                 </div>
                 <p className="text-sm leading-relaxed text-muted-foreground">
-                  Turn accessibility findings and team requests into Content, Epic,
-                  Test, Task, Story, Request, or Bug issues. Follow work from To Do
-                  through review and verification with rich comments, mentions, and
-                  private evidence attachments.
+                  ACT-R37 now keeps visible prerecorded videos in the review queue
+                  when browser audio metadata cannot be confirmed and no audio
+                  description or complete media alternative is found. Confirmed-silent
+                  videos continue through the appropriate visual-only checks.
                 </p>
                 <Link href="/app-updates">
                   <Button variant="link" className="h-auto px-0 text-xs text-cyan-700 dark:text-cyan-300">
-                    Explore issue tracking
+                    Review the media update
                     <ArrowRight className="ml-1 h-3 w-3" />
                   </Button>
                 </Link>

@@ -1,14 +1,16 @@
-  import app from "./app";
+  import app, { waitForActiveRequests } from "./app";
   import { logger } from "./lib/logger";
   import { pool, db, scanSessionsTable, pageResultsTable, usersTable } from "@workspace/db";
   import { inArray, eq, and, lt } from "drizzle-orm";
-  import { startScan, startScanWatchdog } from "./lib/scanQueue";
-  import { resumeOrphanedCrawlerSessions, runScheduledCrawls, runDueCrawlerSessions } from "./lib/crawler";
+  import { startScan, startScanWatchdog, stopScanWork, waitForScanWork, isScanWorkStopping } from "./lib/scanQueue";
+  import { resumeOrphanedCrawlerSessions, runScheduledCrawls, runDueCrawlerSessions, stopCrawlerWork, waitForCrawlerWork, isCrawlerWorkStopping } from "./lib/crawler";
   import { recoverAIAssessments } from "./lib/ai-assessment";
+  import { closeBrowser } from "./lib/scanner";
   import bcrypt from "bcryptjs";
   import { execSync } from "child_process";
   import { existsSync, readdirSync } from "fs";
   import path from "path";
+  import type { Server } from "http";
   
   async function runStartupMigrations(): Promise<void> {
     const client = await pool.connect();
@@ -579,6 +581,30 @@
           IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'page_results' AND column_name = 'carried_forward') THEN
             ALTER TABLE page_results ADD COLUMN carried_forward BOOLEAN NOT NULL DEFAULT FALSE;
           END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'page_results' AND column_name = 'final_url') THEN
+            ALTER TABLE page_results ADD COLUMN final_url TEXT;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'page_results' AND column_name = 'http_status') THEN
+            ALTER TABLE page_results ADD COLUMN http_status INTEGER;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'page_results' AND column_name = 'content_type') THEN
+            ALTER TABLE page_results ADD COLUMN content_type TEXT;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'page_results' AND column_name = 'response_captured_at') THEN
+            ALTER TABLE page_results ADD COLUMN response_captured_at TIMESTAMP;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'page_results' AND column_name = 'acquisition_method') THEN
+            ALTER TABLE page_results ADD COLUMN acquisition_method TEXT;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'page_results' AND column_name = 'proxy_strategy') THEN
+            ALTER TABLE page_results ADD COLUMN proxy_strategy TEXT;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'page_results' AND column_name = 'raw_html_hash') THEN
+            ALTER TABLE page_results ADD COLUMN raw_html_hash TEXT;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'page_results' AND column_name = 'rendered_dom_hash') THEN
+            ALTER TABLE page_results ADD COLUMN rendered_dom_hash TEXT;
+          END IF;
           CREATE INDEX IF NOT EXISTS page_results_url_hash_idx ON page_results (url, content_hash);
         END
         $$
@@ -799,6 +825,9 @@
           discovered_from  TEXT,
           content_hash     TEXT,
           http_status      INTEGER,
+          final_url        TEXT,
+          content_type     TEXT,
+          response_captured_at TIMESTAMP,
           issue_count      INTEGER   NOT NULL DEFAULT 0,
           error_message    TEXT,
           scanned_at       TIMESTAMP,
@@ -884,7 +913,14 @@
       await client.query(`
         ALTER TABLE crawler_pages
           ADD COLUMN IF NOT EXISTS rule_count INTEGER NOT NULL DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS captured_html TEXT
+          ADD COLUMN IF NOT EXISTS captured_html TEXT,
+          ADD COLUMN IF NOT EXISTS final_url TEXT,
+          ADD COLUMN IF NOT EXISTS content_type TEXT,
+          ADD COLUMN IF NOT EXISTS response_captured_at TIMESTAMP,
+          ADD COLUMN IF NOT EXISTS discovery_attempts INTEGER NOT NULL DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS discovery_last_attempt_at TIMESTAMP,
+          ADD COLUMN IF NOT EXISTS discovery_next_attempt_at TIMESTAMP,
+          ADD COLUMN IF NOT EXISTS discovery_last_error TEXT
       `);
   
       // 28b. Siteimprove-style crawl policy, scheduling, and URL disposition tables.
@@ -1293,6 +1329,30 @@
       await client.query(`
         CREATE INDEX IF NOT EXISTS rule_page_stats_page_idx ON rule_page_stats(page_result_id)
       `);
+      // 43b. Persist the registry decision for every requested rule on every
+      // page. This is intentionally separate from issue rows: a clean rule,
+      // an inapplicable rule, and a skipped rule are all meaningful evidence.
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS rule_execution_statuses (
+          id              SERIAL PRIMARY KEY,
+          page_result_id  INTEGER NOT NULL REFERENCES page_results(id) ON DELETE CASCADE,
+          rule_id         TEXT NOT NULL,
+          status          TEXT NOT NULL,
+          execution_tier  TEXT NOT NULL DEFAULT 'automatic',
+          carried_forward BOOLEAN NOT NULL DEFAULT FALSE,
+          UNIQUE(page_result_id, rule_id)
+        );
+        CREATE INDEX IF NOT EXISTS rule_execution_statuses_page_idx
+          ON rule_execution_statuses(page_result_id);
+        CREATE INDEX IF NOT EXISTS rule_execution_statuses_rule_idx
+          ON rule_execution_statuses(rule_id, status);
+      `);
+      await client.query(`
+        ALTER TABLE rule_execution_statuses
+          ADD COLUMN IF NOT EXISTS carried_forward BOOLEAN NOT NULL DEFAULT FALSE;
+        CREATE UNIQUE INDEX IF NOT EXISTS rule_execution_statuses_page_rule_unique
+          ON rule_execution_statuses(page_result_id, rule_id);
+      `);
   
       // 43a. Preserve score-density data for the corrected historical R32
       // findings. This follows the CREATE TABLE step so an older Azure database
@@ -1479,6 +1539,7 @@
   
   async function recoverOrphanedScans(): Promise<void> {
     try {
+      if (isScanWorkStopping()) return;
       // Skip scans created in the last 3 minutes — the retry endpoint can take
       // ~30 s to bulk-insert pages for large scans.  If a new container starts
       // during that window, "pending" scans will have 0 page rows, causing
@@ -1505,8 +1566,18 @@
   
       logger.info({ count: orphaned.length }, "Recovering orphaned scans on startup");
   
-      for (const session of orphaned) {
-        try {
+      // Keep restart pressure bounded.  In particular, do not launch one
+      // browser pool per orphan while the health endpoint is coming online.
+      const RECOVERY_CONCURRENCY = 2;
+      for (let offset = 0; offset < orphaned.length; offset += RECOVERY_CONCURRENCY) {
+        if (isScanWorkStopping()) {
+          logger.info("Stopping orphaned scan recovery before the next batch");
+          return;
+        }
+        const batch = orphaned.slice(offset, offset + RECOVERY_CONCURRENCY);
+        await Promise.all(batch.map(async (session) => {
+          try {
+          if (isScanWorkStopping()) return;
           await db
             .update(pageResultsTable)
             .set({ status: "pending" })
@@ -1539,7 +1610,7 @@
               .set({ status: "completed", completedAt: new Date() })
               .where(eq(scanSessionsTable.id, session.id));
             logger.info({ scanId: session.id }, "Orphaned scan had no remaining pages — marked completed");
-            continue;
+            return;
           }
   
           await db
@@ -1548,17 +1619,16 @@
             .where(eq(scanSessionsTable.id, session.id));
   
           const urls = remaining.map((p) => p.url);
-          startScan(session.id, urls, {
+          await startScan(session.id, urls, {
             ...((session.options as Record<string, unknown>) ?? {}),
             skipCompletedPages: true,
-          }).catch((err) => {
-            logger.error({ scanId: session.id, err }, "Orphaned scan restart failed");
           });
   
           logger.info({ scanId: session.id, urlCount: urls.length }, "Restarted orphaned scan");
-        } catch (err) {
-          logger.error({ scanId: session.id, err }, "Failed to recover orphaned scan — skipping");
-        }
+          } catch (err) {
+            logger.error({ scanId: session.id, err }, "Failed to recover orphaned scan — skipping");
+          }
+        }));
       }
     } catch (err) {
       logger.error({ err }, "recoverOrphanedScans failed — scans may stay stuck");
@@ -1657,6 +1727,63 @@
   
   const port = Number(rawPort);
   if (Number.isNaN(port) || port <= 0) throw new Error(`Invalid PORT value: "${rawPort}"`);
+
+  let activeServer: Server | undefined;
+  let initialSchedulerTimer: ReturnType<typeof setTimeout> | undefined;
+  let schedulerTimer: ReturnType<typeof setInterval> | undefined;
+  let shutdownStarted = false;
+  let postListenRecoveryPromise: Promise<void> | undefined;
+  const activeSchedulerRuns = new Set<Promise<void>>();
+
+  async function waitForHealthEndpoint(): Promise<boolean> {
+    // Listening means the socket is bound, not that the HTTP stack is ready.
+    // Probe the same endpoint used by Azure before starting recovery work.
+    for (let attempt = 0; attempt < 20 && !shutdownStarted; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1_000);
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/healthz`, {
+          signal: controller.signal,
+          headers: { Accept: "application/json" },
+        });
+        if (response.ok) return true;
+      } catch {
+        // The listener may need another event-loop turn to accept requests.
+      } finally {
+        clearTimeout(timer);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    return false;
+  }
+
+  async function runPostListenRecovery(): Promise<void> {
+    if (!(await waitForHealthEndpoint()) || shutdownStarted) {
+      logger.warn("Health endpoint did not become reachable — deferring startup recovery");
+      return;
+    }
+    // Recovery ordering is deliberate: scans, AI assessments, then crawlers.
+    // Avoiding a resource spike is more important than recovering every orphan
+    // immediately; health/API availability remains the primary objective.
+    // Each phase is detached from startup and isolates its own failures.
+    try {
+      await recoverOrphanedScans();
+    } catch (err) {
+      logger.error({ err }, "Post-listen orphaned scan recovery failed");
+    }
+    if (shutdownStarted || isScanWorkStopping() || isCrawlerWorkStopping()) return;
+    try {
+      await recoverAIAssessments();
+    } catch (err) {
+      logger.error({ err }, "Post-listen AI assessment recovery failed");
+    }
+    if (shutdownStarted || isScanWorkStopping() || isCrawlerWorkStopping()) return;
+    try {
+      await resumeOrphanedCrawlerSessions();
+    } catch (err) {
+      logger.error({ err }, "Post-listen crawler recovery failed");
+    }
+  }
   
   /**
    * Bind the server to the given port, retrying on EADDRINUSE.
@@ -1668,24 +1795,33 @@
    */
   function startListening(port: number, remainingRetries = 8, retryDelayMs = 2000): void {
     const server = app.listen(port);
+    activeServer = server;
   
     server.on("listening", () => {
       logger.info({ port }, "Server listening");
       startScanWatchdog();
+      postListenRecoveryPromise = runPostListenRecovery().catch((err) =>
+        logger.error({ err }, "Post-listen startup recovery failed"),
+      );
   
       const scheduleTick = () => {
-        void Promise.all([runScheduledCrawls(), runDueCrawlerSessions()]).catch((err) =>
+        const run = Promise.all([runScheduledCrawls(), runDueCrawlerSessions()]).catch((err) =>
           logger.error({ err }, "Scheduled crawler tick failed"),
+        );
+        activeSchedulerRuns.add(run);
+        void run.then(
+          () => activeSchedulerRuns.delete(run),
+          () => activeSchedulerRuns.delete(run),
         );
       };
   
       // Give Azure's health probe time to receive a fast response before the
       // first scheduler tick starts database and crawler work.
-      const initialTimer = setTimeout(scheduleTick, 30_000);
-      initialTimer.unref();
+      initialSchedulerTimer = setTimeout(scheduleTick, 30_000);
+      initialSchedulerTimer.unref();
   
-      const timer = setInterval(scheduleTick, 60_000);
-      timer.unref();
+      schedulerTimer = setInterval(scheduleTick, 60_000);
+      schedulerTimer.unref();
     });
   
     server.on("error", (err: NodeJS.ErrnoException) => {
@@ -1707,6 +1843,50 @@
       }
     });
   }
+
+  async function gracefulShutdown(signal: string): Promise<void> {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    logger.info({ signal }, "Graceful shutdown started");
+    if (initialSchedulerTimer) clearTimeout(initialSchedulerTimer);
+    if (schedulerTimer) clearInterval(schedulerTimer);
+
+    // Stop accepting traffic before signalling workers so no new request can
+    // enqueue work while the in-flight work is being drained.
+    const closeServer = activeServer
+      ? new Promise<void>((resolve) => {
+          activeServer?.close(() => resolve());
+        })
+      : Promise.resolve();
+    stopScanWork();
+    stopCrawlerWork();
+
+    const deadline = Date.now() + 10_000;
+    const awaitUntilDeadline = async (work: Promise<unknown>): Promise<void> => {
+      const remaining = Math.max(0, deadline - Date.now());
+      if (remaining === 0) return;
+      await Promise.race([
+        work.then(() => undefined, () => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, remaining)),
+      ]);
+    };
+
+    // Do not close the pool while handlers or workers can still be issuing
+    // queries. Resource order is intentional: traffic → workers → Chromium →
+    // database, with API availability preferred over orphan recovery.
+    await awaitUntilDeadline(waitForActiveRequests(Math.max(0, deadline - Date.now())));
+    await awaitUntilDeadline(Promise.all([...activeSchedulerRuns].map((run) => run.catch(() => undefined))));
+    await awaitUntilDeadline(waitForScanWork(Math.max(0, deadline - Date.now())));
+    await awaitUntilDeadline(waitForCrawlerWork(Math.max(0, deadline - Date.now())));
+    await awaitUntilDeadline(postListenRecoveryPromise ?? Promise.resolve());
+    await awaitUntilDeadline(closeServer);
+    await awaitUntilDeadline(closeBrowser());
+    await awaitUntilDeadline(pool.end());
+    process.exit(0);
+  }
+
+  process.once("SIGTERM", () => { void gracefulShutdown("SIGTERM"); });
+  process.once("SIGINT", () => { void gracefulShutdown("SIGINT"); });
   
   /**
    * Verify the database accepts writes before starting the server.

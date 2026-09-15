@@ -9,6 +9,8 @@ import type { IssuesByImpact } from "./issuesByImpact";
 import type { IssuesByWcagLevel } from "./issuesByWcagLevel";
 import type { PageIssueCount } from "./pageIssueCount";
 import type { RuleCount } from "./ruleCount";
+import type { RuleCoverage } from "./ruleCoverage";
+import type { ScanConfidence } from "./scanConfidence";
 
 export interface ScanReport {
   scanId: number;
@@ -20,4 +22,7 @@ export interface ScanReport {
   issuesByWcagLevel: IssuesByWcagLevel;
   topRules: RuleCount[];
   pagesWithMostIssues: PageIssueCount[];
+  ruleCoverage?: RuleCoverage[];
+  automaticApplicabilityCoverage?: number;
+  confidence?: ScanConfidence;
 }

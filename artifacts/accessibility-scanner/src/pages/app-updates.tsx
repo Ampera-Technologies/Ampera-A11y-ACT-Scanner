@@ -371,6 +371,45 @@ const release142ProductGroups: UpdateGroup[] = [
   updateGroups[3],
 ];
 
+const release143ProductGroups: UpdateGroup[] = [
+  updateGroups[0],
+  updateGroups[1],
+  updateGroups[2],
+  updateGroups[3],
+];
+
+const release144ProductGroups: UpdateGroup[] = [
+  {
+    icon: Workflow,
+    title: "Issue module workflow improvements",
+    description: "Issue details, collaboration, evidence, and relationships are easier to manage without losing context.",
+    category: "Platform",
+    features: [
+      "Issue descriptions and new comments open in focused dialogs, while issue pop-outs use the shared accessible dialog experience",
+      "Rich-text tables support adding, deleting, and splitting rows and columns without losing existing cell content",
+      "Authenticated inline images can be inserted and resized safely in descriptions and comments",
+      "Comments and activity are separated into tabs inside a collapsible, fixed-height history panel so long tickets remain manageable",
+      "Generic issue relationships can connect any visible issues independently of Epic assignment, while Epic hierarchy remains clearly separated",
+      "Private attachments, inline evidence, HTML sanitization, ownership checks, and audit activity retain their existing security boundaries",
+    ],
+  },
+  {
+    icon: Accessibility,
+    title: "Accessibility engine accuracy updates",
+    description: "ACT rule execution and classification now align more closely with real media, landmark, table, and keyboard behavior.",
+    category: "Accessibility",
+    features: [
+      "ACT-R37 now reports a Potential Issue for visible prerecorded videos when audio presence is unresolved and no audio-description track or complete media alternative is found",
+      "Reviewers can confirm whether important visual events are conveyed through existing audio, synchronized audio description, or an equivalent alternative version",
+      "Confirmed-silent videos remain excluded from ACT-R37 and continue through the appropriate visual-only media rules",
+      "ACT-R22 detects videos with confirmed audio and missing captions, while unresolved audio remains a Potential Issue instead of being silently skipped",
+      "ACT-R56 now groups duplicate unnamed landmarks correctly without misclassifying them as ACT-R40 region-name failures",
+      "Rule validation distinguishes headerless tables, hidden communication iframes, and content-dependent media checks according to their exact Alfa applicability",
+      "Focused regression coverage protects media registry selection plus confirmed-audio, unknown-audio, silent-video, description-track, and media-alternative outcomes",
+    ],
+  },
+];
+
 type ReleaseHistoryEntry = {
   version: string;
   month: string;
@@ -384,8 +423,15 @@ export const releaseHistory: ReleaseHistoryEntry[] = [
     version: APP_UPDATES_VERSION,
     month: APP_UPDATES_MONTH,
     label: "Current release",
+    summary: "A stronger Issue module and more accurate accessibility engine behavior across media and structural rules.",
+    groups: release144ProductGroups,
+  },
+  {
+    version: "1.4.3",
+    month: "August 2026",
+    label: "Previous release",
     summary: "A complete issue workflow for accessibility teams, alongside clearer scan setup and scoped checks.",
-    groups: [updateGroups[0], updateGroups[1], updateGroups[2], updateGroups[3]],
+    groups: release143ProductGroups,
   },
   {
     version: "1.4.2",
@@ -1202,7 +1248,7 @@ export function AppUpdatesContent({ compact = false }: { compact?: boolean }) {
 
   return (
     <div className={compact ? "space-y-5" : "space-y-7"}>
-      <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className={compact ? "flex flex-wrap items-start justify-between gap-4" : "grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_320px]"}>
         <div>
           <Badge className="mb-3 gap-1.5 bg-primary/10 text-primary hover:bg-primary/15">
             <Sparkles className="h-3.5 w-3.5" />
@@ -1215,64 +1261,78 @@ export function AppUpdatesContent({ compact = false }: { compact?: boolean }) {
             A complete look at the latest accessibility scanning, project organization,
             reporting, reliability, and platform improvements.
           </p>
+          {!compact && (
+            <div className="mt-5 rounded-xl border border-primary/15 bg-primary/[0.035] p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" className="font-mono text-xs">
+                  v{selectedRelease.version} · {selectedRelease.month}
+                </Badge>
+                <span className="text-xs font-medium text-muted-foreground">{selectedRelease.label}</span>
+              </div>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
+                {selectedRelease.summary}
+              </p>
+            </div>
+          )}
         </div>
-        <Badge variant="outline" className="font-mono text-xs">
-          v{selectedRelease.version} · {selectedRelease.month}
-        </Badge>
-      </div>
 
-      {!compact && (
-        <Card className="overflow-hidden rounded-2xl border-primary/20 bg-card/70 shadow-[0_10px_34px_rgba(109,72,199,0.08)] backdrop-blur-xl">
-          <CardHeader className="pb-3">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <CardTitle className="flex items-center gap-2 text-base">
+        {compact ? (
+          <Badge variant="outline" className="font-mono text-xs">
+            v{selectedRelease.version} · {selectedRelease.month}
+          </Badge>
+        ) : (
+          <Card className="overflow-hidden rounded-2xl border-primary/20 bg-card/70 shadow-[0_10px_34px_rgba(109,72,199,0.08)] backdrop-blur-xl">
+            <CardHeader className="space-y-0 border-b border-border/60 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle className="flex items-center gap-2 text-sm">
                   <RefreshCw className="h-4 w-4 text-primary" />
                   Release history
                 </CardTitle>
-                <CardDescription className="mt-1">
-                  Browse product improvements version by version.
-                </CardDescription>
+                <Badge variant="secondary" className="font-mono text-[10px]">
+                  {releaseHistory.length}
+                </Badge>
               </div>
-              <Badge variant="secondary" className="font-mono text-[10px]">
-                {releaseHistory.length} releases
-              </Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-2 sm:grid-cols-2">
-            {releaseHistory.map((release) => {
-              const selected = release.version === selectedRelease.version;
-              return (
-                <button
-                  key={release.version}
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={() => selectRelease(release.version)}
-                  className={`group rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-                    selected
-                      ? "border-primary/50 bg-primary/5 shadow-sm"
-                      : "border-border hover:border-primary/30 hover:bg-muted/30"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="flex items-center gap-2">
-                      <span className={`h-2.5 w-2.5 rounded-full ${selected ? "bg-primary" : "bg-muted-foreground/40"}`} />
-                      <span className="font-mono text-sm font-semibold">v{release.version}</span>
-                    </span>
-                    <span className="text-xs text-muted-foreground">{release.month}</span>
-                  </div>
-                  <p className="mt-2 text-sm font-medium">{release.label}</p>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{release.summary}</p>
-                  <p className="mt-3 text-[11px] font-medium text-primary">
-                    {release.groups.length} update areas
-                    <span className="ml-1 transition-transform group-hover:translate-x-0.5">→</span>
-                  </p>
-                </button>
-              );
-            })}
-          </CardContent>
-        </Card>
-      )}
+              <CardDescription className="sr-only">
+                Browse product improvements version by version.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="p-2">
+              <div className="app-scrollbar max-h-64 space-y-1 overflow-y-auto pr-1">
+                {releaseHistory.map((release) => {
+                  const selected = release.version === selectedRelease.version;
+                  return (
+                    <button
+                      key={release.version}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => selectRelease(release.version)}
+                      className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                        selected
+                          ? "bg-primary/10 text-foreground"
+                          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                      }`}
+                    >
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${selected ? "bg-primary" : "bg-muted-foreground/35"}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-xs font-semibold">v{release.version}</span>
+                          <span className="shrink-0 text-[10px] text-muted-foreground">{release.month}</span>
+                        </span>
+                        <span className="mt-0.5 block truncate text-[11px]">
+                          {release.groups.length} update {release.groups.length === 1 ? "area" : "areas"}
+                        </span>
+                      </span>
+                      <span className={`text-xs transition-transform group-hover:translate-x-0.5 ${selected ? "text-primary" : "text-muted-foreground/60"}`}>
+                        →
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
 
       {!compact && <InterfaceUpdateShowcase />}
 

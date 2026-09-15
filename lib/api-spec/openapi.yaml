@@ -752,6 +752,14 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PageResult"
+        ruleCoverage:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleCoverage"
+        automaticApplicabilityCoverage:
+          type: number
+        confidence:
+          $ref: "#/components/schemas/ScanConfidence"
       required:
         - id
         - status
@@ -795,6 +803,29 @@ components:
           type: ["integer", "null"]
         scanDurationMs:
           type: ["integer", "null"]
+        finalUrl:
+          type: ["string", "null"]
+        httpStatus:
+          type: ["integer", "null"]
+        contentType:
+          type: ["string", "null"]
+        responseCapturedAt:
+          type: ["string", "null"]
+        acquisitionMethod:
+          type: ["string", "null"]
+        proxyStrategy:
+          type: ["string", "null"]
+        rawHtmlHash:
+          type: ["string", "null"]
+        renderedDomHash:
+          type: ["string", "null"]
+        carriedForward:
+          type: boolean
+          description: Whether this page's evidence was carried forward from a scoped prior scan.
+        ruleStatuses:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleExecutionStatus"
         issues:
           type: array
           items:
@@ -981,6 +1012,81 @@ components:
         - loadDurationMs
         - scanDurationMs
 
+    RuleExecutionStatus:
+      type: object
+      properties:
+        ruleId:
+          type: string
+        status:
+          type: string
+          enum: [not-selected, not-applicable, executed, failed]
+        executionTier:
+          type: string
+          enum: [automatic, manual]
+        carriedForward:
+          type: boolean
+      required: [ruleId, status, executionTier]
+
+    RuleCoverage:
+      type: object
+      properties:
+        ruleId:
+          type: string
+        selected:
+          type: integer
+        notSelected:
+          type: integer
+        notApplicable:
+          type: integer
+        executed:
+          type: integer
+        manual:
+          type: integer
+        failed:
+          type: integer
+        executionTier:
+          type: string
+          enum: [automatic, manual]
+      required: [ruleId, selected, notSelected, notApplicable, executed, manual, failed, executionTier]
+
+    ScanConfidence:
+      type: object
+      properties:
+        classification:
+          type: string
+          enum: [high, medium, low, unavailable]
+        score:
+          type: ["number", "null"]
+        basis:
+          type: array
+          items:
+            type: string
+        completedPages:
+          type: integer
+        failedPages:
+          type: integer
+        automaticApplicabilityCoverage:
+          type: number
+        manualUnresolved:
+          type: integer
+        potentialUnresolved:
+          type: integer
+        fallbackDenominatorPages:
+          type: integer
+        carriedForwardPages:
+          type: integer
+      required:
+        - classification
+        - score
+        - basis
+        - completedPages
+        - failedPages
+        - automaticApplicabilityCoverage
+        - manualUnresolved
+        - potentialUnresolved
+        - fallbackDenominatorPages
+        - carriedForwardPages
+
     ScanReport:
       type: object
       properties:
@@ -1006,6 +1112,14 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PageIssueCount"
+        ruleCoverage:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleCoverage"
+        automaticApplicabilityCoverage:
+          type: number
+        confidence:
+          $ref: "#/components/schemas/ScanConfidence"
       required:
         - scanId
         - totalPages

@@ -137,6 +137,27 @@ describe("issue comment editing", () => {
     expect(mockUpdate).toHaveBeenCalledWith(tables.comments);
   });
 
+  it("preserves safe tables and authenticated issue images while removing unsafe image sources", async () => {
+    const issue = { id: 42, title: "Issue" };
+    const comment = { id: 7, issueId: 42, authorId: USER.id, body: "Old" };
+    arrangeSelections(issue, comment);
+    const safeBody = '<table><tbody><tr><td>Result</td></tr></tbody></table><figure><img src="/api/issues/42/attachments/9" alt="Scan result" style="width:50%;height:auto;max-width:100%"><figcaption>Scan result</figcaption></figure>';
+    arrangeSuccessfulUpdates({ ...comment, body: safeBody, mentions: [] });
+
+    const response = await request(await createTestApp())
+      .patch("/api/issues/42/comments/7")
+      .send({
+        body: `${safeBody}<img src="https://attacker.example/tracker.png" onerror="bad()">`,
+      });
+
+    expect(response.status).toBe(200);
+    const savedBody = mockUpdate.mock.results[0]?.value.set.mock.calls[0]?.[0]?.body;
+    expect(savedBody).toContain("<table>");
+    expect(savedBody).toContain('<img src="/api/issues/42/attachments/9" alt="Scan result" style="width:50%;height:auto;max-width:100%">');
+    expect(savedBody).not.toContain("attacker.example");
+    expect(savedBody).not.toContain("onerror");
+  });
+
   it("rejects an edit by someone other than the comment author", async () => {
     arrangeSelections(
       { id: 42 },

@@ -16,6 +16,21 @@ const PgStore = connectPgSimple(session);
 const app: Express = express();
 export const ISSUE_ROUTER_APP_MOUNT_MARKER = "issues-router-app-mount-v2";
 
+// Track requests independently from server.close(): Node waits for sockets,
+// but an active handler may still be doing database/browser work.
+const activeRequests = new Set<Promise<void>>();
+export async function waitForActiveRequests(timeoutMs: number): Promise<boolean> {
+  if (activeRequests.size === 0) return true;
+  const drained = Promise.all([...activeRequests].map((request) => request.catch(() => undefined)));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+  });
+  const result = await Promise.race([drained.then(() => true), timeout]);
+  if (timer) clearTimeout(timer);
+  return result;
+}
+
 app.use(
   pinoHttp({
     logger,
@@ -35,6 +50,22 @@ app.use(
     },
   }),
 );
+
+app.use((_req, res, next) => {
+  let settled = false;
+  let resolveRequest!: () => void;
+  const request = new Promise<void>((resolve) => { resolveRequest = resolve; });
+  activeRequests.add(request);
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    activeRequests.delete(request);
+    resolveRequest();
+  };
+  res.once("finish", settle);
+  res.once("close", settle);
+  next();
+});
 
 // Trust reverse-proxy headers (Replit, Azure App Service, etc.)
 // Required for secure cookies and correct IP detection behind a TLS-terminating proxy.

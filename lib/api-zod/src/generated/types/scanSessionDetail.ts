@@ -6,6 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { PageResult } from "./pageResult";
+import type { RuleCoverage } from "./ruleCoverage";
+import type { ScanConfidence } from "./scanConfidence";
 import type { ScanOptions } from "./scanOptions";
 import type { ScanSessionDetailStatus } from "./scanSessionDetailStatus";
 
@@ -34,4 +36,7 @@ export interface ScanSessionDetail {
   projectName: string | null;
   options?: ScanOptions;
   pages: PageResult[];
+  ruleCoverage?: RuleCoverage[];
+  automaticApplicabilityCoverage?: number;
+  confidence?: ScanConfidence;
 }

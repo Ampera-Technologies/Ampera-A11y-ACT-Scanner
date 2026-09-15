@@ -121,6 +121,31 @@ export const PageResultStatus = {
   not_available: "not_available",
 } as const;
 
+export type RuleExecutionStatusStatus =
+  (typeof RuleExecutionStatusStatus)[keyof typeof RuleExecutionStatusStatus];
+
+export const RuleExecutionStatusStatus = {
+  "not-selected": "not-selected",
+  "not-applicable": "not-applicable",
+  executed: "executed",
+  failed: "failed",
+} as const;
+
+export type RuleExecutionStatusExecutionTier =
+  (typeof RuleExecutionStatusExecutionTier)[keyof typeof RuleExecutionStatusExecutionTier];
+
+export const RuleExecutionStatusExecutionTier = {
+  automatic: "automatic",
+  manual: "manual",
+} as const;
+
+export interface RuleExecutionStatus {
+  ruleId: string;
+  status: RuleExecutionStatusStatus;
+  executionTier: RuleExecutionStatusExecutionTier;
+  carriedForward?: boolean;
+}
+
 export type AccessibilityIssueRuleType =
   (typeof AccessibilityIssueRuleType)[keyof typeof AccessibilityIssueRuleType];
 
@@ -247,7 +272,69 @@ export interface PageResult {
   loadDurationMs: number | null;
   /** @nullable */
   scanDurationMs: number | null;
+  /** @nullable */
+  finalUrl?: string | null;
+  /** @nullable */
+  httpStatus?: number | null;
+  /** @nullable */
+  contentType?: string | null;
+  /** @nullable */
+  responseCapturedAt?: string | null;
+  /** @nullable */
+  acquisitionMethod?: string | null;
+  /** @nullable */
+  proxyStrategy?: string | null;
+  /** @nullable */
+  rawHtmlHash?: string | null;
+  /** @nullable */
+  renderedDomHash?: string | null;
+  /** Whether this page's evidence was carried forward from a scoped prior scan. */
+  carriedForward?: boolean;
+  ruleStatuses?: RuleExecutionStatus[];
   issues: AccessibilityIssue[];
+}
+
+export type RuleCoverageExecutionTier =
+  (typeof RuleCoverageExecutionTier)[keyof typeof RuleCoverageExecutionTier];
+
+export const RuleCoverageExecutionTier = {
+  automatic: "automatic",
+  manual: "manual",
+} as const;
+
+export interface RuleCoverage {
+  ruleId: string;
+  selected: number;
+  notSelected: number;
+  notApplicable: number;
+  executed: number;
+  manual: number;
+  failed: number;
+  executionTier: RuleCoverageExecutionTier;
+}
+
+export type ScanConfidenceClassification =
+  (typeof ScanConfidenceClassification)[keyof typeof ScanConfidenceClassification];
+
+export const ScanConfidenceClassification = {
+  high: "high",
+  medium: "medium",
+  low: "low",
+  unavailable: "unavailable",
+} as const;
+
+export interface ScanConfidence {
+  classification: ScanConfidenceClassification;
+  /** @nullable */
+  score: number | null;
+  basis: string[];
+  completedPages: number;
+  failedPages: number;
+  automaticApplicabilityCoverage: number;
+  manualUnresolved: number;
+  potentialUnresolved: number;
+  fallbackDenominatorPages: number;
+  carriedForwardPages: number;
 }
 
 export interface ScanSessionDetail {
@@ -275,6 +362,9 @@ export interface ScanSessionDetail {
   projectName: string | null;
   options?: ScanOptions;
   pages: PageResult[];
+  ruleCoverage?: RuleCoverage[];
+  automaticApplicabilityCoverage?: number;
+  confidence?: ScanConfidence;
 }
 
 export type ScanStatusStatus =
@@ -370,6 +460,9 @@ export interface ScanReport {
   issuesByWcagLevel: IssuesByWcagLevel;
   topRules: RuleCount[];
   pagesWithMostIssues: PageIssueCount[];
+  ruleCoverage?: RuleCoverage[];
+  automaticApplicabilityCoverage?: number;
+  confidence?: ScanConfidence;
 }
 
 export interface CreateScanBody {

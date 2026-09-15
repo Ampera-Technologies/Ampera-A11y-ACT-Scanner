@@ -4,6 +4,22 @@ import { getAlfaTabOrder, hasAlfaFocusIndicator, isInsideAlfaLandmarkOrDialog } 
 import { elementContextForAI, getSelector, outerHtmlSnippet } from "../dom-helpers";
 import { isProgrammaticallyHidden, isRendered, isVisible } from "../visibility";
 
+type LandmarkIdentity = { role: string; name: string };
+
+export function findDuplicateLandmarkNames<T extends LandmarkIdentity>(
+  landmarks: readonly T[],
+): T[][] {
+  const byRoleAndName = new Map<string, T[]>();
+  for (const landmark of landmarks) {
+    const normalizedName = landmark.name.replace(/\s+/g, " ").trim().toLowerCase();
+    const key = `${landmark.role}\u0000${normalizedName}`;
+    const group = byRoleAndName.get(key);
+    if (group) group.push(landmark);
+    else byRoleAndName.set(key, [landmark]);
+  }
+  return [...byRoleAndName.values()].filter((group) => group.length > 1);
+}
+
 export function runHeadingsLandmarksRules(results: ScanRawResult[], EMIT_MANUAL_ONLY_RULES: boolean, pushStat: PushStatFn): void {
   // ACT-R53: Headings not structured / level skipped (WCAG 1.3.1)
   // ════════════════════════════════════════════════════════════════════════
@@ -218,21 +234,23 @@ export function runHeadingsLandmarksRules(results: ScanRawResult[], EMIT_MANUAL_
         results.push({ ruleId: "ACT-R55", type: "Potential Issue", impact: "moderate", description: `Multiple "${roleStr}" landmark regions share the accessible name "${nameStr}" but contain different content`, element: outerHtmlSnippet(el), elementContext: elementContextForAI(el), selector: getSelector(el) });
       }
     }
-    // R56: only flag landmarks that are missing a name when multiple of the same role exist
-    // (same-named duplicates are handled by R55 above)
-    const byRole: Record<string, LandmarkInfo[]> = {};
-    for (const info of landmarks) {
-      byRole[info.role] = byRole[info.role] || [];
-      byRole[info.role].push(info);
-    }
-    for (const [role, group] of Object.entries(byRole)) {
-      if (group.length < 2) continue;
-      const hasAnyName = group.some((g) => !!g.name);
-      if (!hasAnyName) continue; // all unnamed — a different issue (R40 covers unnamed regions)
-      for (const info of group) {
-        if (!info.name) {
-          results.push({ ruleId: "ACT-R56", type: "Potential Issue", impact: "moderate", description: `Multiple "${role}" landmark regions exist but this one has no accessible name — add aria-label to distinguish it`, element: outerHtmlSnippet(info.el), selector: getSelector(info.el) });
-        }
+    // ACT-R56: landmarks with the same role must have unique accessible names.
+    // The empty accessible name participates in comparison, so two unnamed
+    // navigation or banner landmarks fail just like two equally named ones.
+    for (const duplicateGroup of findDuplicateLandmarkNames(landmarks)) {
+      for (const info of duplicateGroup) {
+        const duplicateName = info.name
+          ? `the accessible name "${info.name}"`
+          : "no accessible name";
+        results.push({
+          ruleId: "ACT-R56",
+          type: "Issue",
+          impact: "moderate",
+          description: `Multiple "${info.role}" landmarks have ${duplicateName} — give each landmark of this role a unique accessible name`,
+          element: outerHtmlSnippet(info.el),
+          elementContext: elementContextForAI(info.el),
+          selector: getSelector(info.el),
+        });
       }
     }
   }

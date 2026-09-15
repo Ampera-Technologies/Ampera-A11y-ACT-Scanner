@@ -70,6 +70,33 @@ export interface Coverage {
   totalOccurrences: number;
   distinctRules: number;
   brokenLinks: number;
+  automaticApplicabilityCoverage?: number;
+  ruleExecution?: RuleCoverage[];
+  confidence?: ScanConfidence;
+}
+
+export interface RuleCoverage {
+  ruleId: string;
+  selected: number;
+  notSelected: number;
+  notApplicable: number;
+  executed: number;
+  manual: number;
+  failed: number;
+  executionTier: "automatic" | "manual";
+}
+
+export interface ScanConfidence {
+  classification: "high" | "medium" | "low" | "unavailable";
+  score: number | null;
+  basis: string[];
+  completedPages: number;
+  failedPages: number;
+  automaticApplicabilityCoverage: number;
+  manualUnresolved: number;
+  potentialUnresolved: number;
+  fallbackDenominatorPages: number;
+  carriedForwardPages: number;
 }
 
 export interface ImpactRow {

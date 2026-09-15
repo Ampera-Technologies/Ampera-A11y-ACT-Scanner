@@ -77,6 +77,38 @@ export default function ScanReport() {
         <Card className="rounded-2xl border-white/80 bg-white/65 shadow-[0_12px_32px_rgba(69,57,112,.06)] backdrop-blur-xl"><CardHeader className="flex flex-row items-start justify-between"><div><CardTitle className="text-base">Impact distribution</CardTitle><p className="mt-1 text-xs text-muted-foreground">Where remediation effort is concentrated</p></div><Sparkles className="h-4 w-4 text-[#6d48c7]" /></CardHeader><CardContent className="h-[290px]">{impactData.length ? <ResponsiveContainer><PieChart><Pie data={impactData} cx="50%" cy="50%" innerRadius={62} outerRadius={94} paddingAngle={4} dataKey="value">{impactData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}</Pie><Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #e8e0fa" }} /><Legend /></PieChart></ResponsiveContainer> : <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No issues found</div>}</CardContent></Card>
         <Card className="rounded-2xl border-white/80 bg-white/65 shadow-[0_12px_32px_rgba(69,57,112,.06)] backdrop-blur-xl"><CardHeader><CardTitle className="text-base">WCAG level breakdown</CardTitle><p className="mt-1 text-xs text-muted-foreground">Issues mapped to conformance levels</p></CardHeader><CardContent className="h-[290px]">{wcagData.length ? <ResponsiveContainer><BarChart data={wcagData} margin={{ top: 20, right: 18, left: -18, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#ebe8f3" /><XAxis dataKey="name" /><YAxis allowDecimals={false} /><Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #e8e0fa" }} /><Bar dataKey="value" fill="#6d48c7" radius={[7, 7, 0, 0]} /></BarChart></ResponsiveContainer> : <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No issues found</div>}</CardContent></Card>
       </div>
+      <Card className="relative rounded-2xl border-white/80 bg-white/65 shadow-[0_12px_32px_rgba(69,57,112,.06)] backdrop-blur-xl">
+        <CardHeader className="flex flex-row items-start justify-between">
+          <div>
+            <CardTitle className="text-base">Evidence confidence</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">Confidence is separate from the accessibility score.</p>
+          </div>
+          <Badge variant="outline" className="capitalize">{report.confidence.classification}</Badge>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 text-sm sm:grid-cols-4">
+            <div><span className="text-muted-foreground">Automatic coverage</span><strong className="ml-2">{report.automaticApplicabilityCoverage}%</strong></div>
+            <div><span className="text-muted-foreground">Manual review</span><strong className="ml-2">{report.confidence.manualUnresolved}</strong></div>
+            <div><span className="text-muted-foreground">Fallback pages</span><strong className="ml-2">{report.confidence.fallbackDenominatorPages}</strong></div>
+            <div><span className="text-muted-foreground">Carried forward</span><strong className="ml-2">{report.confidence.carriedForwardPages}</strong></div>
+          </div>
+          <details className="rounded-lg border border-violet-100 bg-violet-50/40 px-3 py-2 text-xs">
+            <summary className="cursor-pointer font-medium text-violet-800">How this classification was determined</summary>
+            <ul className="mt-2 list-disc space-y-1 pl-4 text-muted-foreground">{report.confidence.basis.map((item) => <li key={item}>{item}</li>)}</ul>
+          </details>
+        </CardContent>
+      </Card>
+      <Card className="relative rounded-2xl border-white/80 bg-white/65 shadow-[0_12px_32px_rgba(69,57,112,.06)] backdrop-blur-xl">
+        <CardHeader><CardTitle className="text-base">Rule execution coverage</CardTitle><p className="mt-1 text-xs text-muted-foreground">Selected, applicable, executed, manual, and failed page counts.</p></CardHeader>
+        <CardContent>
+          <div className="max-h-80 overflow-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 bg-white/90 text-muted-foreground"><tr><th className="py-2">Rule</th><th>Tier</th><th>Selected</th><th>Not selected</th><th>Not applicable</th><th>Executed</th><th>Manual</th><th>Failed</th></tr></thead>
+              <tbody>{report.ruleCoverage.map((rule) => <tr key={rule.ruleId} className="border-t border-violet-100/70"><td className="py-2 font-mono">{rule.ruleId}</td><td>{rule.executionTier}</td><td>{rule.selected}</td><td>{rule.notSelected}</td><td>{rule.notApplicable}</td><td>{rule.executed}</td><td>{rule.manual}</td><td>{rule.failed}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
       <Card className="relative rounded-2xl border-white/80 bg-white/65 shadow-[0_12px_32px_rgba(69,57,112,.06)] backdrop-blur-xl"><CardHeader className="flex flex-row items-center justify-between"><div><CardTitle className="text-base">Top violated rules</CardTitle><p className="mt-1 text-xs text-muted-foreground">Prioritized by occurrence count</p></div><ArrowUpRight className="h-4 w-4 text-muted-foreground" /></CardHeader><CardContent>{report.topRules.length ? <div className="divide-y divide-violet-100/70">{report.topRules.map((rule, idx) => <div key={`${rule.ruleId}-${idx}`} className="flex items-center gap-4 py-4" data-testid={`row-rule-${rule.ruleId}`}><span className="font-mono text-xs text-muted-foreground">0{idx + 1}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{rule.description}</p><p className="mt-1 font-mono text-xs text-[#6d48c7]">{rule.ruleId}</p></div><Badge variant="outline" className="rounded-lg border-violet-200 bg-violet-50 px-3 py-1 font-mono text-violet-700">{rule.count} issues</Badge></div>)}</div> : <div className="py-10 text-center text-sm text-muted-foreground">No violated rules recorded.</div>}</CardContent></Card>
     </div>
   );
