@@ -39,7 +39,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libxdamage1 \
   libxrandr2 \
   libgbm1 \
-  libasound2 \
+  libasound2t64 \
   libpangocairo-1.0-0 \
   libpango-1.0-0 \
   libcairo2 \
