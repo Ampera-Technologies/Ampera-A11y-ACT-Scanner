@@ -98,4 +98,34 @@ else
 fi
 
 echo "=== START NODE ==="
+echo "=== FRONTEND DEPLOYMENT CHECK ==="
+
+PUBLIC_DIR="/home/site/wwwroot/artifacts/api-server/dist/public"
+
+if [ -d "$PUBLIC_DIR" ]; then
+  echo "=== PUBLIC DIR EXISTS ==="
+  ls -lah "$PUBLIC_DIR"
+else
+  echo "=== ERROR: PUBLIC DIR MISSING ==="
+fi
+
+if [ -f "$PUBLIC_DIR/index.html" ]; then
+  echo "=== INDEX.HTML EXISTS ==="
+  echo "=== INDEX SIZE ==="
+  wc -c "$PUBLIC_DIR/index.html"
+
+  echo "=== INDEX.HTML CONTENT ==="
+  cat "$PUBLIC_DIR/index.html"
+else
+  echo "=== ERROR: INDEX.HTML MISSING ==="
+fi
+
+if [ -d "$PUBLIC_DIR/assets" ]; then
+  echo "=== ASSETS DIR EXISTS ==="
+  find "$PUBLIC_DIR/assets" -maxdepth 1 -type f -printf '%f %s bytes\n'
+else
+  echo "=== ERROR: ASSETS DIR MISSING ==="
+fi
+
+echo "=== END FRONTEND DEPLOYMENT CHECK ==="
 node /home/site/wwwroot/artifacts/api-server/dist/index.mjs
