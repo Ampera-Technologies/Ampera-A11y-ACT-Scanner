@@ -366,10 +366,16 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
 
   console.log("[build] Building frontend for API package...");
   // npm_execpath is set by pnpm when this script runs through `pnpm run`.
-  // Invoking that JS entry point through Node avoids Windows' inability to
-  // execute the pnpm.cmd shim via spawnSync("pnpm", ...) without a shell.
+  // It may be a JS entry point, a Windows .cmd shim, or a native Linux binary,
+  // depending on how pnpm was installed. Launch each form appropriately.
   const packageManagerEntry = process.env.npm_execpath;
-  const frontendBuildCommand = packageManagerEntry
+  const isJavaScriptPackageManager = packageManagerEntry
+    ? /\.(?:c?js|mjs)$/i.test(packageManagerEntry)
+    : false;
+  const isWindowsCommandShim = packageManagerEntry
+    ? /\.(?:cmd|bat)$/i.test(packageManagerEntry)
+    : false;
+  const frontendBuildCommand = packageManagerEntry && isJavaScriptPackageManager
     ? {
         executable: process.execPath,
         args: [
@@ -379,11 +385,24 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
           "run",
           "build",
         ],
+        shell: false,
       }
-    : {
-        executable: process.platform === "win32" ? "pnpm.cmd" : "pnpm",
-        args: ["--filter", "@workspace/accessibility-scanner", "run", "build"],
-      };
+    : packageManagerEntry
+      ? {
+          executable: packageManagerEntry,
+          args: [
+            "--filter",
+            "@workspace/accessibility-scanner",
+            "run",
+            "build",
+          ],
+          shell: process.platform === "win32" && isWindowsCommandShim,
+        }
+      : {
+          executable: process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+          args: ["--filter", "@workspace/accessibility-scanner", "run", "build"],
+          shell: process.platform === "win32",
+        };
   const frontendBuild = spawnSync(
     frontendBuildCommand.executable,
     frontendBuildCommand.args,
@@ -391,6 +410,7 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
       cwd: workspaceRoot,
       env: { ...process.env, BASE_PATH: "/" },
       stdio: "inherit",
+      shell: frontendBuildCommand.shell,
     },
   );
   if (frontendBuild.error) throw frontendBuild.error;
