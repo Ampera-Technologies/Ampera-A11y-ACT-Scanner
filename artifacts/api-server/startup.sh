@@ -9,10 +9,17 @@ export PUPPETEER_CACHE_DIR=/home/site/wwwroot/.cache/puppeteer
 # accessibility scan.
 BROWSER_BUNDLE="/home/site/wwwroot/artifacts/api-server/dist/browser-bundle.js"
 SERVER_BUNDLE="/home/site/wwwroot/artifacts/api-server/dist/index.mjs"
+FRONTEND_INDEX="/home/site/wwwroot/artifacts/api-server/dist/public/index.html"
 if [ ! -s "$BROWSER_BUNDLE" ] && ! grep -q "window.__ampera" "$SERVER_BUNDLE" 2>/dev/null; then
   echo "=== FATAL: browser rule bundle is missing from the Azure deployment ===" >&2
   echo "=== Expected standalone bundle: $BROWSER_BUNDLE ===" >&2
   echo "=== Rebuild and redeploy with: pnpm --filter @workspace/api-server run build ===" >&2
+  exit 1
+fi
+if [ ! -s "$FRONTEND_INDEX" ]; then
+  echo "=== FATAL: React frontend is missing from the Azure deployment ===" >&2
+  echo "=== Expected frontend entry point: $FRONTEND_INDEX ===" >&2
+  echo "=== Rebuild and redeploy with the API build so dist/public is packaged ===" >&2
   exit 1
 fi
 if [ -s "$BROWSER_BUNDLE" ]; then
@@ -20,7 +27,7 @@ if [ -s "$BROWSER_BUNDLE" ]; then
 else
   echo "=== Embedded browser rule bundle verified in $SERVER_BUNDLE ==="
 fi
-
+echo "=== React frontend verified at $FRONTEND_INDEX ==="
 # ── Chrome system dependencies ────────────────────────────────────────────────
 # Azure App Service Linux only persists /home between container restarts.
 # System packages (installed to /usr/lib etc.) are wiped every time the
