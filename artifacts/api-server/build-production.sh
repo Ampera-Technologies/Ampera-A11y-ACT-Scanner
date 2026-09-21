@@ -74,11 +74,48 @@ echo "[build] Building frontend..."
 BASE_PATH=/ pnpm --filter @workspace/accessibility-scanner run build
 echo "[build] Frontend done"
 
-echo "[build] Copying frontend into api-server dist/public/..."
-mkdir -p artifacts/api-server/dist/public
-cp -r artifacts/accessibility-scanner/dist/public/. artifacts/api-server/dist/public/
-echo "[build] Done — frontend available at dist/public/"
+#echo "[build] Copying frontend into api-server dist/public/..."
+#mkdir -p artifacts/api-server/dist/public
+#cp -r artifacts/accessibility-scanner/dist/public/. artifacts/api-server/dist/public/
+#$echo "[build] Done — frontend available at dist/public/"
+echo "[build] Frontend done"
 
+FRONTEND_DIST="artifacts/accessibility-scanner/dist/public"
+
+if [ ! -d "$FRONTEND_DIST" ]; then
+  echo "[build] ERROR: Frontend output directory is missing: $FRONTEND_DIST" >&2
+  exit 1
+fi
+
+if [ ! -s "$FRONTEND_DIST/index.html" ]; then
+  echo "[build] ERROR: Frontend index.html is missing or empty: $FRONTEND_DIST/index.html" >&2
+  echo "[build] Frontend output:" >&2
+  find "artifacts/accessibility-scanner/dist" -maxdepth 3 -type f -print >&2 || true
+  exit 1
+fi
+
+echo "[build] Frontend index.html verified:"
+ls -lh "$FRONTEND_DIST/index.html"
+
+echo "[build] Frontend assets:"
+find "$FRONTEND_DIST/assets" -maxdepth 1 -type f -print 2>/dev/null || true
+
+echo "[build] Copying frontend into api-server dist/public/..."
+
+mkdir -p artifacts/api-server/dist/public
+
+cp -r "$FRONTEND_DIST/." \
+      artifacts/api-server/dist/public/
+
+if [ ! -s "artifacts/api-server/dist/public/index.html" ]; then
+  echo "[build] ERROR: Frontend index.html was not copied into API dist/public/" >&2
+  exit 1
+fi
+
+echo "[build] Final frontend artifact:"
+find artifacts/api-server/dist/public -maxdepth 2 -type f -print
+
+echo "[build] Done — frontend available at dist/public/"
 # ── Install Chrome browser via Puppeteer ──────────────────────────────────────
 # IMPORTANT: run this AFTER pnpm build so node_modules are present.
 #
