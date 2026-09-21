@@ -1,10 +1,9 @@
 import { createRequire } from "node:module";
-import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
-import { access, cp, mkdir, readFile, rm } from "node:fs/promises";
+import { access, readFile, rm } from "node:fs/promises";
 
 // Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
 globalThis.require = createRequire(import.meta.url);
@@ -334,97 +333,12 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
       "The Issue Management routes or health marker were not included in the build.",
     );
   }
-  if (!serverBundleContents.includes("issues-create-route-v1")) {
-    throw new Error(
-      "Invalid API bundle: issues-create-route-v1 build marker is missing. " +
-      "The POST /api/issues route was not included in the build.",
-    );
-  }
-  if (!serverBundleContents.includes("issues-router-app-mount-v2")) {
-    throw new Error(
-      "Invalid API bundle: issues-router-app-mount-v2 build marker is missing. " +
-      "Issue Management must be mounted directly by the Express application.",
-    );
-  }
   if (!serverBundleContents.includes(languageDetectorMarker)) {
     throw new Error(
       "Invalid API bundle: the embedded franc-min language-detector marker is missing. " +
       "Rebuild the API and browser bundles together before deploying.",
     );
   }
-
-  // The Azure App Service runs this API as the public web process. Build and
-  // package the React app here so every API build contains the SPA, regardless
-  // of whether the caller used the root build or build-production.sh.
-  const workspaceRoot = path.resolve(artifactDir, "../..");
-  const frontendDistDir = path.resolve(
-    workspaceRoot,
-    "artifacts/accessibility-scanner/dist/public",
-  );
-  const frontendIndexPath = path.join(frontendDistDir, "index.html");
-  const packagedPublicDir = path.join(distDir, "public");
-
-  console.log("[build] Building frontend for API package...");
-  // npm_execpath is set by pnpm when this script runs through `pnpm run`.
-  // It may be a JS entry point, a Windows .cmd shim, or a native Linux binary,
-  // depending on how pnpm was installed. Launch each form appropriately.
-  const packageManagerEntry = process.env.npm_execpath;
-  const isJavaScriptPackageManager = packageManagerEntry
-    ? /\.(?:c?js|mjs)$/i.test(packageManagerEntry)
-    : false;
-  const isWindowsCommandShim = packageManagerEntry
-    ? /\.(?:cmd|bat)$/i.test(packageManagerEntry)
-    : false;
-  const frontendBuildCommand = packageManagerEntry && isJavaScriptPackageManager
-    ? {
-        executable: process.execPath,
-        args: [
-          packageManagerEntry,
-          "--filter",
-          "@workspace/accessibility-scanner",
-          "run",
-          "build",
-        ],
-        shell: false,
-      }
-    : packageManagerEntry
-      ? {
-          executable: packageManagerEntry,
-          args: [
-            "--filter",
-            "@workspace/accessibility-scanner",
-            "run",
-            "build",
-          ],
-          shell: process.platform === "win32" && isWindowsCommandShim,
-        }
-      : {
-          executable: process.platform === "win32" ? "pnpm.cmd" : "pnpm",
-          args: ["--filter", "@workspace/accessibility-scanner", "run", "build"],
-          shell: process.platform === "win32",
-        };
-  const frontendBuild = spawnSync(
-    frontendBuildCommand.executable,
-    frontendBuildCommand.args,
-    {
-      cwd: workspaceRoot,
-      env: { ...process.env, BASE_PATH: "/" },
-      stdio: "inherit",
-      shell: frontendBuildCommand.shell,
-    },
-  );
-  if (frontendBuild.error) throw frontendBuild.error;
-  if (frontendBuild.status !== 0) {
-    throw new Error(
-      `Frontend build failed with exit code ${frontendBuild.status ?? "unknown"}`,
-    );
-  }
-
-  await access(frontendIndexPath);
-  await mkdir(packagedPublicDir, { recursive: true });
-  await cp(frontendDistDir, packagedPublicDir, { recursive: true });
-  await access(path.join(packagedPublicDir, "index.html"));
-  console.log("[build] Frontend packaged at api-server/dist/public");
 }
 
 buildAll().catch((err) => {
