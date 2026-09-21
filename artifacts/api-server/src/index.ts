@@ -7,7 +7,7 @@
   import { recoverAIAssessments } from "./lib/ai-assessment";
   import { closeBrowser } from "./lib/scanner";
   import bcrypt from "bcryptjs";
-  import { execFileSync, execSync } from "child_process";
+  import { execSync } from "child_process";
   import { existsSync, readdirSync } from "fs";
   import path from "path";
   import type { Server } from "http";
@@ -1701,60 +1701,19 @@
   
       logger.warn({ chromePath, missingLibs }, "Chrome missing shared libraries — auto-installing via apt-get");
   
-        try {
-        // Ubuntu 24 exposes several legacy names as virtual packages. apt-cache
-        // still reports candidates for them, but apt-get refuses installation.
-        // Resolve each dependency with an authoritative simulated install.
-        const dependencyAlternatives = [
-          ["libglib2.0-0t64", "libglib2.0-0"],
-          ["libnss3"],
-          ["libnspr4"],
-          ["libatk1.0-0t64", "libatk1.0-0"],
-          ["libatk-bridge2.0-0t64", "libatk-bridge2.0-0"],
-          ["libcups2t64", "libcups2"],
-          ["libdrm2t64", "libdrm2"],
-          ["libxkbcommon0"],
-          ["libxcomposite1"],
-          ["libxdamage1"],
-          ["libxfixes3"],
-          ["libxrandr2"],
-          ["libgbm1"],
-          ["libpango-1.0-0"],
-          ["libcairo2t64", "libcairo2"],
-          ["libasound2t64", "libasound2"],
-          ["libatspi2.0-0t64", "libatspi2.0-0"],
-          ["libx11-6"],
-          ["libxcb1"],
-          ["libxext6"],
-          ["libxrender1"],
-          ["libx11-xcb1"],
-        ];
-        const chromeDependencies = dependencyAlternatives.map((alternatives) => {
-          const resolved = alternatives.find((candidate) => {
-            try {
-              execFileSync(
-                "apt-get",
-                ["install", "--simulate", "--no-install-recommends", candidate],
-                { stdio: "ignore", timeout: 15_000 },
-              );
-              return true;
-            } catch {
-              return false;
-            }
-          });
-          if (!resolved) {
-            throw new Error(
-              `No installable apt package found for ${alternatives.join(" or ")}`,
-            );
-          }
-          return resolved;
-        });
-        execFileSync("apt-get", [
-          "install",
-          "-y",
-          "--no-install-recommends",
-          ...chromeDependencies,
-        ], {
+      // Full set of libraries required by headless Chrome on Ubuntu/Debian.
+      const CHROME_DEPS = [
+        "libglib2.0-0", "libnss3", "libnspr4",
+        "libatk1.0-0", "libatk-bridge2.0-0",
+        "libcups2", "libdrm2", "libxkbcommon0",
+        "libxcomposite1", "libxdamage1", "libxfixes3", "libxrandr2",
+        "libgbm1", "libpango-1.0-0", "libcairo2",
+        "libasound2", "libatspi2.0-0",
+        "libx11-6", "libxcb1", "libxext6", "libxrender1", "libx11-xcb1",
+      ].join(" ");
+  
+      try {
+        execSync(`apt-get install -y --no-install-recommends ${CHROME_DEPS}`, {
           encoding: "utf-8",
           timeout: 120_000,
           stdio: "pipe",

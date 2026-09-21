@@ -12,11 +12,11 @@ fi
 if command -v apt-get &>/dev/null; then
   echo "[build] Installing Chrome system dependencies..."
   apt-get update -qq 2>/dev/null || true
-  package_with_candidate() {
+   package_with_candidate() {
     local candidate
     for candidate in "$@"; do
-      if DEBIAN_FRONTEND=noninteractive apt-get install --simulate \
-        --no-install-recommends "$candidate" >/dev/null 2>&1; then
+      if apt-cache policy "$candidate" 2>/dev/null | \
+        awk '$1 == "Candidate:" && $2 != "(none)" { found = 1 } END { exit found ? 0 : 1 }'; then
         printf '%s\n' "$candidate"
         return 0
       fi
@@ -31,19 +31,19 @@ if command -v apt-get &>/dev/null; then
 
   add_chrome_package ca-certificates
   add_chrome_package fonts-liberation
-  add_chrome_package libasound2t64 libasound2
-  add_chrome_package libatk-bridge2.0-0t64 libatk-bridge2.0-0
-  add_chrome_package libatk1.0-0t64 libatk1.0-0
+  add_chrome_package libasound2 libasound2t64
+  add_chrome_package libatk-bridge2.0-0 libatk-bridge2.0-0t64
+  add_chrome_package libatk1.0-0 libatk1.0-0t64
   add_chrome_package libc6
-  add_chrome_package libcairo2t64 libcairo2
-  add_chrome_package libcups2t64 libcups2
+  add_chrome_package libcairo2 libcairo2t64
+  add_chrome_package libcups2 libcups2t64
   add_chrome_package libdbus-1-3
   add_chrome_package libexpat1
   add_chrome_package libfontconfig1
   add_chrome_package libgbm1
   add_chrome_package libgcc1 libgcc-s1
-  add_chrome_package libglib2.0-0t64 libglib2.0-0
-  add_chrome_package libgtk-3-0t64 libgtk-3-0
+  add_chrome_package libglib2.0-0 libglib2.0-0t64
+  add_chrome_package libgtk-3-0 libgtk-3-0t64
   add_chrome_package libnspr4
   add_chrome_package libnss3
   add_chrome_package libpango-1.0-0

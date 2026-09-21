@@ -32,11 +32,8 @@ apt-get update -qq
 package_with_candidate() {
   local candidate
   for candidate in "$@"; do
-    # apt-cache policy reports a candidate for some virtual packages even
-    # though apt-get refuses to install them (Ubuntu 24's libasound2 is one).
-    # A simulated install is the authoritative installability check.
-    if DEBIAN_FRONTEND=noninteractive apt-get install --simulate \
-      --no-install-recommends "$candidate" >/dev/null 2>&1; then
+    if apt-cache policy "$candidate" 2>/dev/null | \
+      awk '$1 == "Candidate:" && $2 != "(none)" { found = 1 } END { exit found ? 0 : 1 }'; then
       printf '%s\n' "$candidate"
       return 0
     fi
@@ -52,22 +49,22 @@ add_chrome_package() {
   CHROME_PACKAGES+=("$resolved")
 }
 
-add_chrome_package libglib2.0-0t64 libglib2.0-0
+add_chrome_package libglib2.0-0 libglib2.0-0t64
 add_chrome_package libnss3
-add_chrome_package libatk1.0-0t64 libatk1.0-0
-add_chrome_package libatk-bridge2.0-0t64 libatk-bridge2.0-0
-add_chrome_package libcups2t64 libcups2
-add_chrome_package libdrm2t64 libdrm2
+add_chrome_package libatk1.0-0 libatk1.0-0t64
+add_chrome_package libatk-bridge2.0-0 libatk-bridge2.0-0t64
+add_chrome_package libcups2 libcups2t64
+add_chrome_package libdrm2 libdrm2t64
 add_chrome_package libxkbcommon0
 add_chrome_package libxcomposite1
 add_chrome_package libxdamage1
 add_chrome_package libxrandr2
 add_chrome_package libgbm1
-add_chrome_package libasound2t64 libasound2
+add_chrome_package libasound2 libasound2t64
 add_chrome_package libpangocairo-1.0-0
 add_chrome_package libpango-1.0-0
-add_chrome_package libcairo2t64 libcairo2
-add_chrome_package libatspi2.0-0t64 libatspi2.0-0
+add_chrome_package libcairo2 libcairo2t64
+add_chrome_package libatspi2.0-0 libatspi2.0-0t64
 add_chrome_package libx11-6
 add_chrome_package libxcb1
 add_chrome_package libxext6
