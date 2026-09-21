@@ -31,16 +31,19 @@ apt-get update -qq
 # package against the current image instead of assuming the Debian 12 names.
 package_with_candidate() {
   local candidate
+
   for candidate in "$@"; do
-    # apt-cache policy reports a candidate for some virtual packages even
-    # though apt-get refuses to install them (Ubuntu 24's libasound2 is one).
-    # A simulated install is the authoritative installability check.
-    if DEBIAN_FRONTEND=noninteractive apt-get install --simulate \
-      --no-install-recommends "$candidate" >/dev/null 2>&1; then
+    echo "=== CHECKING CHROME PACKAGE: $candidate ==="
+
+    if apt-get install --simulate --no-install-recommends "$candidate"; then
+      echo "=== SELECTED CHROME PACKAGE: $candidate ==="
       printf '%s\n' "$candidate"
       return 0
+    else
+      echo "=== PACKAGE NOT INSTALLABLE: $candidate ==="
     fi
   done
+
   echo "=== FATAL: no apt candidate found for: $* ===" >&2
   return 1
 }
@@ -63,7 +66,7 @@ add_chrome_package libxcomposite1
 add_chrome_package libxdamage1
 add_chrome_package libxrandr2
 add_chrome_package libgbm1
-add_chrome_package libasound2t64 libasound2
+add_chrome_package libasound2t64
 add_chrome_package libpangocairo-1.0-0
 add_chrome_package libpango-1.0-0
 add_chrome_package libcairo2t64 libcairo2

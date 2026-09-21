@@ -14,15 +14,18 @@ if command -v apt-get &>/dev/null; then
   apt-get update -qq 2>/dev/null || true
   package_with_candidate() {
     local candidate
+
     for candidate in "$@"; do
-      if DEBIAN_FRONTEND=noninteractive apt-get install --simulate \
-        --no-install-recommends "$candidate" >/dev/null 2>&1; then
-        printf '%s\n' "$candidate"
-        return 0
-      fi
+        if DEBIAN_FRONTEND=noninteractive apt-get install --simulate \
+            --no-install-recommends "$candidate" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
     done
-    printf '%s\n' "$1"
-  }
+
+    echo "=== FATAL: No installable package found for: $* ===" >&2
+    return 1
+}
 
   CHROME_PACKAGES=()
   add_chrome_package() {
@@ -31,7 +34,7 @@ if command -v apt-get &>/dev/null; then
 
   add_chrome_package ca-certificates
   add_chrome_package fonts-liberation
-  add_chrome_package libasound2t64 libasound2
+  add_chrome_package libasound2t64
   add_chrome_package libatk-bridge2.0-0t64 libatk-bridge2.0-0
   add_chrome_package libatk1.0-0t64 libatk1.0-0
   add_chrome_package libc6

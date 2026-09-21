@@ -1721,7 +1721,7 @@
           ["libgbm1"],
           ["libpango-1.0-0"],
           ["libcairo2t64", "libcairo2"],
-          ["libasound2t64", "libasound2"],
+          ["libasound2t64"],
           ["libatspi2.0-0t64", "libatspi2.0-0"],
           ["libx11-6"],
           ["libxcb1"],
