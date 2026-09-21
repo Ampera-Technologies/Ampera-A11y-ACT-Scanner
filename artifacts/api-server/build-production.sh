@@ -12,43 +12,65 @@ fi
 if command -v apt-get &>/dev/null; then
   echo "[build] Installing Chrome system dependencies..."
   apt-get update -qq 2>/dev/null || true
+  package_with_candidate() {
+    local candidate
+
+    for candidate in "$@"; do
+        if DEBIAN_FRONTEND=noninteractive apt-get install --simulate \
+            --no-install-recommends "$candidate" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    echo "=== FATAL: No installable package found for: $* ===" >&2
+    return 1
+}
+
+  CHROME_PACKAGES=()
+  add_chrome_package() {
+    CHROME_PACKAGES+=("$(package_with_candidate "$@")")
+  }
+
+  add_chrome_package ca-certificates
+  add_chrome_package fonts-liberation
+  add_chrome_package libasound2t64
+  add_chrome_package libatk-bridge2.0-0t64 libatk-bridge2.0-0
+  add_chrome_package libatk1.0-0t64 libatk1.0-0
+  add_chrome_package libc6
+  add_chrome_package libcairo2t64 libcairo2
+  add_chrome_package libcups2t64 libcups2
+  add_chrome_package libdbus-1-3
+  add_chrome_package libexpat1
+  add_chrome_package libfontconfig1
+  add_chrome_package libgbm1
+  add_chrome_package libgcc1 libgcc-s1
+  add_chrome_package libglib2.0-0t64 libglib2.0-0
+  add_chrome_package libgtk-3-0t64 libgtk-3-0
+  add_chrome_package libnspr4
+  add_chrome_package libnss3
+  add_chrome_package libpango-1.0-0
+  add_chrome_package libpangocairo-1.0-0
+  add_chrome_package libstdc++6
+  add_chrome_package libx11-6
+  add_chrome_package libx11-xcb1
+  add_chrome_package libxcb1
+  add_chrome_package libxcomposite1
+  add_chrome_package libxcursor1
+  add_chrome_package libxdamage1
+  add_chrome_package libxext6
+  add_chrome_package libxfixes3
+  add_chrome_package libxi6
+  add_chrome_package libxrandr2
+  add_chrome_package libxrender1
+  add_chrome_package libxss1
+  add_chrome_package libxtst6
+  add_chrome_package lsb-release
+  add_chrome_package wget
+  add_chrome_package xdg-utils
+
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates \
-    fonts-liberation \
-    libasound2t64 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libc6 \
-    libcairo2 \
-    libcups2 \
-    libdbus-1-3 \
-    libexpat1 \
-    libfontconfig1 \
-    libgbm1 \
-    libgcc1 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libpango-1.0-0 \
-    libpangocairo-1.0-0 \
-    libstdc++6 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxi6 \
-    libxrandr2 \
-    libxrender1 \
-    libxss1 \
-    libxtst6 \
-    lsb-release \
-    wget \
-    xdg-utils \
+    "${CHROME_PACKAGES[@]}" \
     2>/dev/null || true
   echo "[build] Chrome system dependencies installed"
 else
