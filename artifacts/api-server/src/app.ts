@@ -158,6 +158,10 @@ app.use("/api", (_req, res) => {
 });
 
 // ── Serve React frontend (production only) ─────────────────────────────────
+app.get("/health", (_req, res) => {
+  res.status(200).send("healthy");
+});
+
 const publicDir = join(dirname(fileURLToPath(import.meta.url)), "public");
 
 if (existsSync(publicDir)) {
