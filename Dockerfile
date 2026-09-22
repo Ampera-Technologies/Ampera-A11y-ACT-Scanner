@@ -71,7 +71,6 @@ RUN chmod +x /app/docker-entrypoint.sh
 # =========================
 RUN pnpm install --no-frozen-lockfile --unsafe-perm
 
-
 # =========================
 # Install Puppeteer Chrome
 # =========================

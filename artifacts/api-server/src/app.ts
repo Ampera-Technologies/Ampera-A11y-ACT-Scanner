@@ -158,21 +158,24 @@ app.use("/api", (_req, res) => {
 });
 
 // ── Serve React frontend (production only) ─────────────────────────────────
-// The production build copies the Vite output into dist/public/ next to this
-// bundle.  In development, the Vite dev server handles the frontend separately.
 const publicDir = join(dirname(fileURLToPath(import.meta.url)), "public");
+
 if (existsSync(publicDir)) {
-  // Serve static assets (JS, CSS, images, etc.) — skip auto-serving index.html
-  // so the SPA catch-all below controls which paths get it.
   app.use(express.static(publicDir, { index: false }));
 
-  // SPA catch-all: any non-API path returns index.html so React Router can
-  // handle client-side navigation (e.g. /login, /scans/123, /admin/users).
-  // Express 5 uses path-to-regexp v8 which rejects bare "*" — use a regex instead.
-  app.get(/.*/, (_req, res) => {
+  // SPA fallback — intentionally avoid app.get("*")
+  app.use((req, res, next) => {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      return next();
+    }
+
+    // Never serve index.html for an unknown API endpoint
+    if (req.path.startsWith("/api/")) {
+      return next();
+    }
+
     res.sendFile(join(publicDir, "index.html"));
   });
 }
-
 export default app;
   
