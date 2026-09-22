@@ -32,10 +32,12 @@ jobs:
         run: |
           docker push ghcr.io/sumitsinha-amp/ampera-act-scanner:latest
 
-      - name: Login to Azure
-        uses: azure/login@v2
+      - name: Deploy container to Azure Web App
+        uses: azure/webapps-deploy@v3
         with:
-          creds: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+          app-name: Ampera-a11y-ACT-Scanner
+          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+          images: ghcr.io/sumitsinha-amp/ampera-act-scanner:latest
 
       - name: Deploy container to Azure Web App
         uses: azure/cli@v2
