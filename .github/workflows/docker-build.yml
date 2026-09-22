@@ -31,3 +31,16 @@ jobs:
       - name: Push image
         run: |
           docker push ghcr.io/sumitsinha-amp/ampera-act-scanner:latest
+
+      - name: Deploy container to Azure Web App
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az webapp config container set \
+              --name Ampera-a11y-ACT-Scanner \
+              --resource-group a11y-act-scanner \
+              --docker-custom-image-name ghcr.io/sumitsinha-amp/ampera-act-scanner:latest
+
+            az webapp restart \
+              --name Ampera-a11y-ACT-Scanner \
+              --resource-group a11y-act-scanner
