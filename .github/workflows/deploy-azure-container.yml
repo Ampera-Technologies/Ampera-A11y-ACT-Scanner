@@ -1,0 +1,109 @@
+name: Deploy Azure container
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: azure-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  IMAGE_NAME: a11y-act
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Sign in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}
+          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+
+      - name: Build and push application image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Configure Azure App Service to run the exact image
+        env:
+          APP_NAME: ${{ secrets.AZURE_APP_NAME }}
+          RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          REGISTRY: ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}
+          REGISTRY_USERNAME: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+          IMAGE: ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # A publish profile can deploy to an existing Web App Container, but
+          # it does not reliably convert a code/Oryx app into one. Configure
+          # the App Service resource explicitly through Azure Resource Manager.
+            az webapp config container set \
+            --name "$APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --container-image-name "$IMAGE" \
+            --container-registry-url "https://$REGISTRY" \
+            --container-registry-user "$REGISTRY_USERNAME" \
+            --container-registry-password "$REGISTRY_PASSWORD"
+
+          # Remove the old /home/site/wwwroot startup command and tell App
+          # Service which port the Docker image exposes.
+          az webapp config set \
+            --name "$APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --startup-file ""
+
+          az webapp config appsettings set \
+            --name "$APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --settings WEBSITES_PORT=8080
+
+          az webapp restart \
+            --name "$APP_NAME" \
+            --resource-group "$RESOURCE_GROUP"
+
+          configured_image="$(
+            az webapp config container show \
+              --name "$APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --query '[?name==`DOCKER_CUSTOM_IMAGE_NAME`].value | [0]' \
+              --output tsv
+          )"
+
+          if [ "$configured_image" != "$IMAGE" ]; then
+            echo "Azure is configured for '$configured_image', expected '$IMAGE'." >&2
+            exit 1
+          fi
+
+          echo "Azure App Service is configured for $configured_image"
