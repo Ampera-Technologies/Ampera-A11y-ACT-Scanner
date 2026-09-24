@@ -25,29 +25,39 @@ jobs:
         uses: docker/login-action@v2
         with:
           registry: ghcr.io/
-          username: ${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_490D8507C58E4539910CBB8FFAF9E7F5 }}
-          password: ${{ secrets.AZUREAPPSERVICE_CONTAINERPASSWORD_0071D81CD99F4728BDE557CD8940BCB4 }}
+          username: ${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_5A594CD742764F9FA52C41B9F63986B2 }}
+          password: ${{ secrets.AZUREAPPSERVICE_CONTAINERPASSWORD_1613C424206A4C09A80B285F499B99A1 }}
 
       - name: Build and push container image to registry
         uses: docker/build-push-action@v3
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_490D8507C58E4539910CBB8FFAF9E7F5 }}/sumitsinha-amp/ampera-act-scanner:${{ github.sha }}
+          tags: ghcr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_5A594CD742764F9FA52C41B9F63986B2 }}/sumitsinha-amp/ampera-act-scanner:${{ github.sha }}
           file: ./Dockerfile
 
   deploy:
     runs-on: ubuntu-latest
-    
+    permissions:
+      id-token: write #This is required for requesting the JWT
+      contents: read #This is required for actions/checkout
+
     needs: build
     
     steps:
       
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_A6CD7C70CEEF4A999422710983B930FA }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_00171F2725984562A7D4B854AAB61FBB }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_FDC5768F4FFC4C3F88369513D6B78BA7 }}
+
       - name: Deploy to Azure Web App
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v2
         with:
           app-name: 'Ampera-a11y-ACT-Scanner'
           slot-name: 'Production'
-          images: 'ghcr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_490D8507C58E4539910CBB8FFAF9E7F5 }}/sumitsinha-amp/ampera-act-scanner:${{ github.sha }}'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_48881018EFED427AA4327DAD15E43B67 }}
+          images: 'ghcr.io/${{ secrets.AZUREAPPSERVICE_CONTAINERUSERNAME_5A594CD742764F9FA52C41B9F63986B2 }}/sumitsinha-amp/ampera-act-scanner:${{ github.sha }}'
+          
